@@ -635,6 +635,22 @@ def effective_mb(sel):
     return round(total, 1)
 
 
+def _write_json_atomic(path, obj):
+    """先寫 .tmp 再 os.replace，避免中斷時留下半截 JSON。
+
+    manifest 是事後追查「那次到底刪了什麼」的唯一線索，寧可多寫一次也不能寫壞。
+    """
+    tmp = path + '.tmp'
+    with open(tmp, 'w', encoding='utf-8') as f:
+        json.dump(obj, f, ensure_ascii=False, indent=2)
+        f.flush()
+        try:
+            os.fsync(f.fileno())
+        except OSError:
+            pass
+    os.replace(tmp, path)
+
+
 # ---------------------------------------------------------------- 網頁
 def render_page(cfg, scan, items, api=False, token=''):
     tpl_path = os.path.join(SCRIPTS, 'page.html')
@@ -789,6 +805,38 @@ def validate_targets(cfg, paths, items):
     return kept, rejected
 
 
+def _resume_paths(cfg, manifest_path, items):
+    """讀中斷的 manifest，挑出「仍存在且仍可刪」的目標。
+
+    已消失的（上次刪成功）直接略過；仍存在但已不可刪（清單過期、變成 C 檔、
+    被設定排除）也略過並回報原因，避免續跑把不安全的路徑帶進來。
+    回傳 (paths, dropped)，dropped 為 [(path, reason)]。
+    """
+    with open(manifest_path, encoding='utf-8') as f:
+        man = json.load(f)
+    by = {x['path'].rstrip('\\').lower(): x for x in items}
+    paths, dropped = [], []
+    for t in man.get('targets', []):
+        p = t.get('path')
+        if not p:
+            continue
+        if not os.path.exists(p):
+            dropped.append((p, '已不存在（上次已刪除）'))
+            continue
+        x = by.get(p.rstrip('\\').lower())
+        if not x:
+            dropped.append((p, '不在最新掃描清單內，請先 rescan'))
+            continue
+        if x.get('tier') == 'C' or not x.get('selectable') or x.get('locked'):
+            dropped.append((p, '目前不可刪（C 檔／鎖定）'))
+            continue
+        if x.get('excluded'):
+            dropped.append((p, '目前不可刪（設定排除）'))
+            continue
+        paths.append(p)
+    return paths, dropped
+
+
 def do_delete(cfg, paths, dry_run=False, scan=None):
     """依 2026-11-23 的流程：manifest → 小項備份 → 分批直接刪除 → 逐項複核 → 紀錄。"""
     scan = scan or load_scan(cfg) or do_scan(cfg)
@@ -798,7 +846,11 @@ def do_delete(cfg, paths, dry_run=False, scan=None):
     free_before = disk_info(cfg['drive'])['free_bytes']
     result = {
         'created': now_str(),
-        'status': 'DRY_RUN' if dry_run else 'EXECUTED',
+        'started_at': now_str(),
+        # 執行中先標 RUNNING；只有在整段跑完且逐項複核後才會改成
+        # EXECUTED／PARTIAL／ABORTED。原本一開頭就寫 EXECUTED，一旦行程被
+        # 中斷（逾時、被安全鉤子打斷、斷電），紀錄會說謊（2026-11-25 實測）。
+        'status': 'DRY_RUN' if dry_run else 'RUNNING',
         'requested': len(paths),
         'target_count': len(targets),
         'target_mb': round(sum(t['mb'] for t in targets), 1),
@@ -821,10 +873,26 @@ def do_delete(cfg, paths, dry_run=False, scan=None):
     manifest['targets'] = [{'path': t['path'], 'mb': t['mb'], 'action': t['action'],
                             'tier': t['tier'], 'nested_in': t['nested_in']}
                            for t in targets]
+    manifest['progress'] = {'done': 0, 'total': len(targets),
+                            'removed': 0, 'remaining': 0, 'updated_at': now_str()}
+    manifest['outcomes'] = []
     mp = os.path.join(out_dir(cfg), 'execution_manifest_%s.json' % stamp)
-    with open(mp, 'w', encoding='utf-8') as f:
-        json.dump(manifest, f, ensure_ascii=False, indent=2)
+    _write_json_atomic(mp, manifest)
     result['manifest'] = mp
+
+    def checkpoint():
+        """每批後落盤一次，中斷（逾時／被安全鉤子打斷／斷電）也追得回進度。"""
+        manifest['progress'] = {
+            'done': len(outcomes), 'total': len(targets),
+            'removed': sum(1 for o in outcomes if not o['after']),
+            'remaining': sum(1 for o in outcomes if o['after']),
+            'updated_at': now_str()}
+        manifest['outcomes'] = outcomes
+        try:
+            _write_json_atomic(mp, manifest)
+        except Exception:
+            pass                       # 落盤失敗不可拖垮刪除流程
+
 
     # 2) 小項備份
     try:
@@ -835,49 +903,72 @@ def do_delete(cfg, paths, dry_run=False, scan=None):
     # 3) 分批刪除
     bsize = max(1, cfg['delete'].get('batch_size', 10))
     outcomes = []
-    for bi in range(0, len(targets), bsize):
-        batch = targets[bi:bi + bsize]
-        for t in batch:
-            p = t['path']
-            act = t['action']
-            rec = {'path': p, 'action': act, 'before': os.path.exists(p)}
-            try:
-                if act == 'thumbcache_only':
-                    n = 0
-                    if os.path.isdir(p):
-                        for fn in os.listdir(p):
-                            if fn.lower().startswith('thumbcache_') and fn.lower().endswith('.db'):
-                                try:
-                                    os.unlink(os.path.join(p, fn))
-                                    n += 1
-                                except OSError:
-                                    pass
-                    rec['removed'] = n
-                elif act == 'empty_recycle_bin':
-                    ok, detail = empty_recycle_bin()
-                    rec['removed'] = 0
-                    rec['detail'] = detail
-                else:
-                    rm, er = rmtree_safe(p)
-                    rec['removed'] = rm
-                    rec['errors'] = er
-            except Exception as e:
-                rec['error'] = str(e)
-            rec['after'] = os.path.exists(p)
-            if rec['after'] and os.path.isdir(p):
+    aborted = None
+    try:
+        for bi in range(0, len(targets), bsize):
+            batch = targets[bi:bi + bsize]
+            for t in batch:
+                p = t['path']
+                act = t['action']
+                rec = {'path': p, 'action': act, 'before': os.path.exists(p)}
                 try:
-                    rec['remaining'] = len(os.listdir(p))
-                except OSError:
-                    rec['remaining'] = -1
-            else:
-                rec['remaining'] = 0
-            outcomes.append(rec)
-        # 每批後複核；若有非預期例外則記錄但不中斷（逐項容錯）
-        log(cfg, 'delete batch %d/%d done' %
-            (bi // bsize + 1, math.ceil(len(targets) / bsize)))
+                    if act == 'thumbcache_only':
+                        n = 0
+                        if os.path.isdir(p):
+                            for fn in os.listdir(p):
+                                if fn.lower().startswith('thumbcache_') and fn.lower().endswith('.db'):
+                                    try:
+                                        os.unlink(os.path.join(p, fn))
+                                        n += 1
+                                    except OSError:
+                                        pass
+                        rec['removed'] = n
+                    elif act == 'empty_recycle_bin':
+                        ok, detail = empty_recycle_bin()
+                        rec['removed'] = 0
+                        rec['detail'] = detail
+                    else:
+                        rm, er = rmtree_safe(p)
+                        rec['removed'] = rm
+                        rec['errors'] = er
+                except Exception as e:
+                    rec['error'] = str(e)
+                rec['after'] = os.path.exists(p)
+                if rec['after'] and os.path.isdir(p):
+                    try:
+                        rec['remaining'] = len(os.listdir(p))
+                    except OSError:
+                        rec['remaining'] = -1
+                else:
+                    rec['remaining'] = 0
+                outcomes.append(rec)
+            # 每批後複核；若有非預期例外則記錄但不中斷（逐項容錯）
+            log(cfg, 'delete batch %d/%d done' %
+                (bi // bsize + 1, math.ceil(len(targets) / bsize)))
+            checkpoint()
+    except BaseException as e:
+        # 逾時、被外部安全鉤子中止、KeyboardInterrupt 等：保留已完成的成績，
+        # 標記 ABORTED 並落盤，讓 `delete --resume` 能接手（2026-11-25 實測需求）。
+        aborted = '%s: %s' % (type(e).__name__, str(e)[:300])
+        log(cfg, 'delete ABORTED after %d/%d targets: %s' %
+            (len(outcomes), len(targets), aborted))
     result['outcomes'] = outcomes
     result['fully_removed'] = sum(1 for o in outcomes if not o['after'])
     result['partial'] = sum(1 for o in outcomes if o['after'])
+    if aborted:
+        result['status'] = 'ABORTED'
+        result['aborted_reason'] = aborted
+        result['aborted_after'] = len(outcomes)
+    elif result['partial']:
+        result['status'] = 'PARTIAL'
+    else:
+        result['status'] = 'EXECUTED'
+    result['finished_at'] = now_str()
+    manifest['status'] = result['status']
+    manifest['finished_at'] = result['finished_at']
+    if aborted:
+        manifest['aborted_reason'] = aborted
+    checkpoint()
 
     # 4) 回收站：預設只回報殘留；啟用設定才清空（避免動到他人 SID 資料）
     if cfg['delete'].get('auto_empty_recycle_bin', False):
@@ -1353,6 +1444,8 @@ def main(argv=None):
     p.add_argument('--paths', nargs='*', default=None, help='完整路徑；省略=預設 A 檔')
     p.add_argument('--confirm', action='store_true', help='實際執行時必須帶上')
     p.add_argument('--dry-run', action='store_true', dest='sub_dry_run')
+    p.add_argument('--resume', metavar='MANIFEST', default=None,
+                   help='從上次中斷的 manifest 續跑：只重試仍然存在且仍可刪的目標')
     p = sub.add_parser('selftest')
     p.add_argument('--with-ui', action='store_true')
     p = sub.add_parser('install-hint')
@@ -1403,7 +1496,21 @@ def main(argv=None):
     if a.cmd == 'delete':
         scan = load_scan(cfg) or do_scan(cfg, verbose=True)
         items = build_items(cfg, scan)
-        paths = a.paths or [x['path'] for x in items if x['default']]
+        if a.resume:
+            if not os.path.exists(a.resume):
+                emit('找不到 manifest：%s' % a.resume)
+                return 2
+            paths, dropped = _resume_paths(cfg, a.resume, items)
+            emit('resume 摘要：可續跑 %d 項；略過 %d 項' % (len(paths), len(dropped)))
+            for p, why in dropped[:20]:
+                emit('  略過 %s — %s' % (p, why))
+            if len(dropped) > 20:
+                emit('  …另有 %d 項略過' % (len(dropped) - 20))
+            if not paths:
+                emit('沒有需要續跑的項目。')
+                return 0
+        else:
+            paths = a.paths or [x['path'] for x in items if x['default']]
         if dry or not a.confirm:
             r = do_delete(cfg, paths, dry_run=True, scan=scan)
             emit(json.dumps(r, ensure_ascii=False, indent=2))

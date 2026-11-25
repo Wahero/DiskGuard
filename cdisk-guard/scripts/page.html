@@ -190,16 +190,18 @@ function sortList(list){
   return a;
 }
 function selectedItems(){ return DATA.filter(x=>picked.has(x.id)); }
-function effectiveMB(sel){ return sel.filter(x=>!x.nested_in).reduce((s,x)=>s+x.mb,0); }
+// 實際可釋放：扣除「子項已含於父項」與「依設定排除」兩類，與後端 validate_targets 一致
+function effectiveMB(sel){ return sel.filter(x=>!x.nested_in && !x.excluded).reduce((s,x)=>s+x.mb,0); }
 
 function renderKPI(){
   const gross = DATA.filter(x=>x.tier==='A' && !x.locked && !x.excluded).reduce((s,x)=>s+x.mb,0);
+  const effA = effectiveMB(DATA.filter(x=>x.tier==='A' && x.selectable && !x.excluded));
   const cards = [
     ['磁碟總容量', DISK.total_gb+' GB', 'GetDiskFreeSpaceExW'],
     ['已使用', DISK.used_gb+' GB', '含所有系統與使用者資料'],
     ['剩餘可用', DISK.free_gb+' GB', '門檻 '+META.threshold_pct+'% ＝ '+(DISK.total_gb*META.threshold_pct/100).toFixed(2)+' GB'],
     ['剩餘比例', DISK.free_pct+'%', DISK.free_pct < META.threshold_pct ? '⚠ 已低於門檻' : '高於門檻'],
-    ['A 檔可選（帳面）', fmt(gross), '含父子重疊，實際見工具列'],
+    ['A 檔實際可釋放', fmt(effA), '帳面 '+fmt(gross)+'（含父子重疊，此處已扣除）'],
     ['掃描檔案數', META.files_seen.toLocaleString(), META.elapsed_sec+'s'+(META.truncated?'（已達時間上限）':'')],
   ];
   document.getElementById('kpis').innerHTML = cards.map(c=>
@@ -273,8 +275,8 @@ document.getElementById('btn-sort-size').onclick = ()=>{
   document.getElementById('btn-sort-tier').classList.remove('on');
   renderTables();
 };
-document.getElementById('btn-all').onclick = ()=>setPicked(x=>x.selectable);
-document.getElementById('btn-a').onclick = ()=>setPicked(x=>x.selectable && x.tier==='A');
+document.getElementById('btn-all').onclick = ()=>setPicked(x=>x.selectable && !x.excluded);
+document.getElementById('btn-a').onclick = ()=>setPicked(x=>x.selectable && x.tier==='A' && !x.excluded);
 document.getElementById('btn-default').onclick = ()=>setPicked(x=>x.default);
 document.getElementById('btn-none').onclick = ()=>setPicked(()=>false);
 document.getElementById('btn-rescan').onclick = async ()=>{
