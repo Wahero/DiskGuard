@@ -122,11 +122,88 @@ user32 = ctypes.WinDLL('user32', use_last_error=True)
 gdi32 = ctypes.WinDLL('gdi32', use_last_error=True)
 shell32 = ctypes.WinDLL('shell32', use_last_error=True)
 kernel32 = ctypes.WinDLL('kernel32', use_last_error=True)
+try:
+    dwmapi = ctypes.WinDLL('dwmapi')          # 取「物理」視窗邊界（不受 DPI 虛擬化影響）
+    dwmapi.DwmGetWindowAttribute.argtypes = [wintypes.HWND, wintypes.DWORD,
+                                             ctypes.c_void_p, wintypes.DWORD]
+    dwmapi.DwmGetWindowAttribute.restype = ctypes.c_long
+except Exception:
+    dwmapi = None
 LRESULT = ctypes.c_ssize_t
 WNDPROC = ctypes.WINFUNCTYPE(LRESULT, wintypes.HWND, wintypes.UINT,
                              wintypes.WPARAM, wintypes.LPARAM)
 HOOKPROC = ctypes.WINFUNCTYPE(LRESULT, ctypes.c_int,
                               wintypes.WPARAM, wintypes.LPARAM)
+
+
+_DPI_MODE = None
+
+
+def enable_dpi_awareness():
+    """讓本程序以「物理像素」1:1 輸出（Per-Monitor v2，失敗則逐級降級）。
+
+    **為什麼要開**（2026-11-25 6.22）：系統 125% 縮放下，DPI-unaware 程序的
+    104 px 視窗會被 Windows 位圖拉伸成 130 px（雙線性插值）→ 機械人邊緣與
+    選單文字都發糊。改成 DPI 感知後，我們自己按 1.25 倍輸出 130 px，畫面與
+    物理像素 1:1 對齊，字與金邊銳利，**視覺尺寸不變**。
+
+    附帶好處：GetCursorPos／GetWindowRect／GetSystemMetrics／低階鉤子全部統一
+    為物理座標，不再有 6.21 那個「虛擬 vs 物理雙軌」的座標陷阱。
+
+    必須在建立任何視窗之前呼叫（對已经建立的視窗無效）。
+    可重複呼叫：第二次起直接回傳第一次成功的模式（程序一旦設定就不再改變，
+    否則會誤報成 'system'）。
+    """
+    global _DPI_MODE
+    if _DPI_MODE:
+        return _DPI_MODE
+    try:
+        f = user32.SetProcessDpiAwarenessContext
+        f.argtypes = [ctypes.c_void_p]
+        f.restype = wintypes.BOOL
+        if f(ctypes.c_void_p(-4)):     # DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2
+            _DPI_MODE = 'per-monitor-v2'
+            return _DPI_MODE
+    except Exception:
+        pass
+    try:
+        shcore = ctypes.WinDLL('shcore')
+        if shcore.SetProcessDpiAwareness(2) == 0:   # PROCESS_PER_MONITOR_DPI_AWARE
+            _DPI_MODE = 'per-monitor'
+            return _DPI_MODE
+    except Exception:
+        pass
+    try:
+        if user32.SetProcessDPIAware():
+            _DPI_MODE = 'system'
+            return _DPI_MODE
+    except Exception:
+        pass
+    _DPI_MODE = 'none'
+    return _DPI_MODE
+
+
+def dpi_scale():
+    """目前 DPI 比例：96 dpi → 1.0、120 dpi → 1.25。取不到就當 1.0。
+
+    只應在 enable_dpi_awareness() 之後呼叫，否則拿到的是虛擬化後的 96。
+    """
+    try:
+        user32.GetDpiForSystem.restype = wintypes.UINT
+        d = int(user32.GetDpiForSystem())
+        if 48 <= d <= 480:
+            return d / 96.0
+    except Exception:
+        pass
+    try:
+        hdc = user32.GetDC(0)
+        d = int(gdi32.GetDeviceCaps(hdc, 88))     # LOGPIXELSX
+        user32.ReleaseDC(0, hdc)
+        if 48 <= d <= 480:
+            return d / 96.0
+    except Exception:
+        pass
+    return 1.0
 
 
 class WNDCLASSW(ctypes.Structure):
@@ -240,6 +317,9 @@ for _fn, _arg, _ret in [
     (user32.GetCursorPos, [ctypes.POINTER(POINT)], wintypes.BOOL),
     (user32.SetCursorPos, [ctypes.c_int, ctypes.c_int], wintypes.BOOL),
     (user32.GetWindowRect, [wintypes.HWND, ctypes.POINTER(RECT)], wintypes.BOOL),
+    # DPI 換算：低階鉤子給的是物理像素，本程序是 DPI-unaware（虛擬座標）
+    (user32.SetWindowPos, [wintypes.HWND, wintypes.HWND, ctypes.c_int, ctypes.c_int,
+                           ctypes.c_int, ctypes.c_int, wintypes.UINT], wintypes.BOOL),
     (user32.FindWindowW, [wintypes.LPCWSTR, wintypes.LPCWSTR], wintypes.HWND),
     (user32.UpdateLayeredWindow, [wintypes.HWND, wintypes.HDC, ctypes.POINTER(POINT),
                                   ctypes.POINTER(SIZE), wintypes.HDC, ctypes.POINTER(POINT),
@@ -308,7 +388,7 @@ kernel32.GetCurrentProcessId.restype = wintypes.DWORD
 # ---------------------------------------------------------------- pet 設定
 PET_DEFAULTS = {
     'enabled': True,
-    'size': 104,               # 新造型細節較多，64→104（可在 config.json.pet.size 覆寫）
+    'size': 104,               # 設計像素；實際視窗＝size×DPI（125% → 130），外觀尺寸不變
     'idle_hidden': False,
     'idle_corner': 'bottom-right',
     'sounds_enabled': True,
@@ -621,6 +701,10 @@ class PetApp:
         except (TypeError, ValueError):
             fs = 1.15
         self.font_scale = min(1.3, max(1.0, fs))
+        # 1:1 清晰繪製：程序已 DPI-aware，視窗與字型全部用「物理像素」。
+        # 104 設計像素 × 1.25 = 130 物理像素 → 外觀尺寸與舊版一模一樣，但不再被拉伸。
+        self.dpi = dpi_scale()
+        self.pet_size = max(24, int(round(int(pcfg['size']) * self.dpi)))
         # 造型：pet.art = 'robot'（新機械人）／'classic'（舊小碟）；無 pet_art 模組則強制回退
         art = str((pcfg or {}).get('art', 'robot') or 'robot').lower()
         self.use_new_art = bool(pet_art) and art != 'classic'
@@ -636,6 +720,7 @@ class PetApp:
         self.hover_mouth = None
         self.blink_next = 0.0
         self.blink_until = 0.0
+        self.peek_ts = 0.0          # 懸停提示音冷卻（防貼邊抖動連響）
         # 待機眨眼（與懸停表情分開）：idle_eye='blink' 期間眼睛閉上
         self.idle_eye = None
         self.blink_repeat = 0
@@ -659,6 +744,10 @@ class PetApp:
         self.menu_result = None
         self.menu_done = False
         self.menu_x = self.menu_y = 0
+        # 診斷用：data\menu-trace.on 存在時把選單收到的每個滑鼠訊息寫進日誌
+        self.menu_trace = os.path.exists(os.path.join(C.out_dir(self.cfg), 'menu-trace.on'))
+        # 診斷用：data\pet-trace.on 存在時記錄桌寵收到的滑鼠訊息（平時零成本）
+        self.trace = os.path.exists(os.path.join(C.out_dir(self.cfg), 'pet-trace.on'))
         self.anim = None
         # Phase 2：所有耗時／會開埠的動作都在工作者執行緒，UI 只設旗標
         self.state_lock = threading.RLock()
@@ -697,10 +786,10 @@ class PetApp:
         sh = user32.GetSystemMetrics(SM_YVIRTUALSCREEN)
         cw = user32.GetSystemMetrics(SM_CXVIRTUALSCREEN)
         ch = user32.GetSystemMetrics(SM_CYVIRTUALSCREEN)
-        n = int(self.p['size'])
+        n = self.pet_size
         p = self.p['idle_corner']
-        x = sw + (cw - n - 24 if 'right' in p else 24)
-        y = sh + (ch - n - 48 if 'bottom' in p else 24)
+        x = sw + (cw - n - self._px(24) if 'right' in p else self._px(24))
+        y = sh + (ch - n - self._px(48) if 'bottom' in p else self._px(24))
         return x, y
 
     def clamp_pos(self, x, y):
@@ -708,7 +797,7 @@ class PetApp:
         sh = user32.GetSystemMetrics(SM_YVIRTUALSCREEN)
         cw = user32.GetSystemMetrics(SM_CXVIRTUALSCREEN)
         ch = user32.GetSystemMetrics(SM_CYVIRTUALSCREEN)
-        n = int(self.p['size'])
+        n = self.pet_size
         x = max(sw, min(int(x), sw + cw - n))
         y = max(sh, min(int(y), sh + ch - n))
         return x, y
@@ -755,6 +844,22 @@ class PetApp:
             if self.menu_win and hwnd == self.menu_win.hwnd:
                 self._menu_wndproc(msg, wparam)
                 return 0
+            if self.trace and msg in (0x0200, 0x0201, 0x0202, 0x0204, 0x0205,
+                                      WM_MOUSELEAVE):
+                # 診斷：data\pet-trace.on 存在時記錄每個滑鼠訊息與當時狀態。
+                # 「點了沒反應」先看這裡有沒有訊息，再談視窗內的判定邏輯。
+                try:
+                    pt = POINT()
+                    user32.GetCursorPos(ctypes.byref(pt))
+                    C.log(self.cfg, 'pet trace msg=0x%04x cur=(%d,%d) hover=%s drag=%s '
+                                    'anim=%s frame=%s cap=%s' %
+                          (msg, pt.x, pt.y, self.hover,
+                           None if not self.drag else (self.drag[2], self.drag[3],
+                                                       self.drag[4]),
+                           bool(self.anim), self.frame,
+                           hex(user32.GetCapture() or 0)))
+                except Exception:
+                    pass
             if msg == WM_TRAY:
                 ev = lparam & 0xFFFF
                 if ev == 0x0201:      # WM_LBUTTONUP
@@ -826,6 +931,16 @@ class PetApp:
                 return 0
             if msg == 0x0200:         # WM_MOUSEMOVE
                 if self.drag and self.pet_win:
+                    if not self._left_down():
+                        # 左鍵其實已經放開（放開事件在視窗外／被搶走／系統對話框吃掉）
+                        # → 立刻結束拖曳。否則 self.drag 永遠留著，桌寵會黏著滑鼠
+                        # 跟著跑，懸停表情也永遠不回來（2026-11-25 6.22 實測）。
+                        self.drag = None
+                        self.frame = 'idle'
+                        self._drop_stale_capture()
+                        self.save_state()
+                        self.repaint_pet()
+                        return 0
                     pt = POINT()
                     user32.GetCursorPos(ctypes.byref(pt))
                     if not self.drag[2]:
@@ -848,8 +963,13 @@ class PetApp:
                 self.hover_leave()
                 return 0
             if msg == 0x0215:         # WM_CAPTURECHANGED
-                if self.drag and not self.drag[2]:
+                # 失去滑鼠捕獲＝這次拖曳結束（不論有沒有動過）。留著 drag 會讓
+                # 桌寵一直黏在滑鼠上，是「拖一次之後就怪怪的」的元兇。
+                if self.drag:
                     self.drag = None
+                    if self.frame == 'drag':
+                        self.frame = 'idle'
+                        self.repaint_pet()
                 return 0
             if msg == 0x0204:         # WM_RBUTTONDOWN（桌寵，按下即開選單）
                 self.hover_reset()            # 選單期間不要有懸停表情
@@ -861,6 +981,7 @@ class PetApp:
                 user32.PostQuitMessage(0)
                 return 0
             if msg == 0x0111:         # WM_COMMAND（選單）
+                self.sfx('menu_hit')  # 托盤原生選單走這條（自繪選單不播開場音，選中才播）
                 self.on_command(wparam & 0xFFFF)
                 return 0
         except Exception as ex:
@@ -876,7 +997,7 @@ class PetApp:
         r = RECT()
         if user32.GetWindowRect(user32.FindWindowW('Shell_TrayWnd', None), ctypes.byref(r)):
             h = self._panel_size()[1]
-            return (r.left, r.top - h - 8 if r.top > 290 else r.bottom)
+            return (r.left, r.top - h - self._px(8) if r.top > 290 else r.bottom)
         return self._idle_pos()
 
     def toggle_usage(self, anchor):
@@ -993,9 +1114,13 @@ class PetApp:
     MENU_RADIUS = 10
     MENU_ICON_FONT = 'Segoe UI Symbol'
 
+    def _px(self, n):
+        """設計像素 → 物理像素（1:1 繪製後，所有幾何常數都要換算）。"""
+        return int(round(n * self.dpi))
+
     def _fs(self, n):
-        """依目前字級比例換算像素（座標與字級共用，確保版面等比）。"""
-        return max(9, int(round(n * self.font_scale)))
+        """依字級比例＋DPI 換算像素（座標與字級共用，確保版面等比且銳利）。"""
+        return max(9, int(round(n * self.font_scale * self.dpi)))
 
     def menu_items(self):
         """選單項目（字體大小一項顯示目前級別）。"""
@@ -1079,14 +1204,45 @@ class PetApp:
         user32.GetCursorPos(ctypes.byref(pt))
         return self._menu_hit(pt.x - self.menu_x, pt.y - self.menu_y)
 
+    def _physical_rect(self, hwnd, fallback):
+        """視窗的**物理**邊界 (x, y, w, h)；取不到就回傳傳入的虛擬矩形。
+
+        DWM 的 DWMWA_EXTENDED_FRAME_BOUNDS(9) 一律以物理像素回答，是本程序
+        （DPI-unaware）唯一可靠的物理座標來源。
+        """
+        try:
+            if dwmapi:
+                r = RECT()
+                if dwmapi.DwmGetWindowAttribute(wintypes.HWND(hwnd), 9,
+                                                ctypes.byref(r),
+                                                ctypes.sizeof(r)) == 0:
+                    if r.right > r.left and r.bottom > r.top:
+                        return (r.left, r.top, r.right - r.left, r.bottom - r.top)
+        except Exception:
+            pass
+        return fallback
+
     def _menu_mouse_hook(self, ncode, wparam, lparam, state):
-        """低階滑鼠鉤子：點在選單矩形外就 PostMessage 關閉訊息。"""
+        """低階滑鼠鉤子：點在選單矩形外就 PostMessage 關閉訊息。
+
+        **座標陷阱（2026-11-25 血淚）**：本程序 DPI-unaware（本機 125% 縮放），
+        GetCursorPos／GetWindowRect 回「虛擬化」座標（如 542,665），而 WH_MOUSE_LL
+        的 MSLLHOOKSTRUCT.pt 是**物理像素**（678,831）。拿物理座標比虛擬矩形，
+        任何真實點擊都被判成「在選單外」→ 選單立刻關、功能永不執行；合成
+        PostMessage 不經鉤子，所以自動化測試全綠也照樣復現不了。
+        `PhysicalToLogicalPoint` 對 DPI-unaware 執行緒無效；`WindowFromPhysicalPoint`
+        又受 z-order 影響不可靠 → 改用 DWM 物理邊界，兩邊同為物理像素直接比對。
+        """
         try:
             if ncode >= HC_ACTION and wparam in (WM_LBUTTONDOWN, WM_RBUTTONDOWN):
                 ms = ctypes.cast(lparam, ctypes.POINTER(MSLLHOOKSTRUCT)).contents
                 px, py = ms.pt.x, ms.pt.y
                 inside = (state['x'] <= px <= state['x'] + state['w'] and
                           state['y'] <= py <= state['y'] + state['h'])
+                if self.menu_trace:
+                    C.log(self.cfg, 'menu hook 0x%04x phys=(%d,%d) rect=(%d,%d,%d,%d) '
+                                    'inside=%s' % (wparam, px, py, state['x'], state['y'],
+                                                   state['w'], state['h'], inside))
                 if not inside:
                     user32.PostMessageW(state['hwnd'], WM_MENU_DISMISS, 0, 0)
         except Exception:
@@ -1100,13 +1256,26 @@ class PetApp:
         右鍵完全不會執行任何功能——0x0204 是右鍵「按下」，選單正是在那時打開的，
         隨後的 0x0205 放手若被當成選取，就會「一放手就執行游標那一列」。
         """
+        if getattr(self, 'menu_trace', False):  # 診斷用：data\menu-trace.on 存在才記錄
+            try:
+                pt = POINT()
+                user32.GetCursorPos(ctypes.byref(pt))
+                C.log(self.cfg, 'menu trace msg=0x%04x cur=(%d,%d) base=(%d,%d) '
+                                'row=%d press=%d hover=%d done=%s' %
+                      (msg, pt.x, pt.y, self.menu_x, self.menu_y,
+                       self._menu_cursor_row(), self.menu_press, self.menu_hover,
+                       self.menu_done))
+            except Exception:
+                pass
         if msg == WM_MENU_DISMISS:              # 全域鉤子：點選單外
             self.menu_done = True
             return
         if msg not in (0x0200, 0x0201, 0x0202, 0x0204, 0x0205, 0x0100):
             return
-        # 剛開啟的 150 ms 內不吃按鍵：開選單那一次右鍵的餘波一律無效
-        if msg != 0x0200 and self._now() - self.menu_open_ts < 0.15:
+        # 防餘波只針對「開選單那一次右鍵」：右鍵訊息在 150 ms 內忽略。
+        # 左鍵是使用者的明確意圖，**絕對不能吃掉**——否則快手一點就會發現
+        # 「第一下沒反應、要再點一次」（2026-11-25 Boss 回報）。
+        if msg in (0x0204, 0x0205) and self._now() - self.menu_open_ts < 0.15:
             return
         if msg == 0x0200:                       # WM_MOUSEMOVE
             idx = self._menu_cursor_row()
@@ -1149,10 +1318,18 @@ class PetApp:
                     self.menu_done = True
 
     def open_menu(self, x, y):
-        """自繪分層選單：完全不依賴 TrackPopupMenu 的 owner-draw 回呼。"""
-        self.sfx('menu_open')
+        """自繪分層選單：完全不依賴 TrackPopupMenu 的 owner-draw 回呼。
+
+        注意：**開選單不播任何音效**（Boss 2026-11-25 要求「未左擊點功能前不應有聲」）。
+        只有真的選了一項、功能要執行時才播 `menu_hit`。
+        """
         C.log(self.cfg, 'pet menu open at (%d,%d)' % (x, y))
         event(self.cfg, 'menu_open')
+        # 拖曳中按右鍵：這次拖曳到此為止，否則選單關閉後 drag 仍留著
+        if self.drag:
+            self.drag = None
+            if self.frame == 'drag':
+                self.frame = 'idle'
         rows, height = self._menu_layout()
         width = self._fs(340)
         sw = user32.GetSystemMetrics(0)
@@ -1162,7 +1339,8 @@ class PetApp:
         win = Layered(width, height, (x, y), topmost=True, opaque=True)
         # 圓角裁切：讓分層視窗四角透明，避開「與其他程式一樣方」的邊框
         rgn = gdi32.CreateRoundRectRgn(0, 0, width + 1, height + 1,
-                                       self.MENU_RADIUS, self.MENU_RADIUS)
+                                       self._px(self.MENU_RADIUS),
+                                       self._px(self.MENU_RADIUS))
         if rgn:
             user32.SetWindowRgn(win.hwnd, rgn, True)   # 所有權移交給視窗，不 DeleteObject
         self.menu_win = win
@@ -1178,7 +1356,9 @@ class PetApp:
         user32.SetCapture(win.hwnd)   # 確保選單內點擊送到本視窗
 
         # 全域低階滑鼠鉤子：點選單外立即關閉（SetCapture 只在同一執行緒有效）
-        self.menu_hook_state = {'hwnd': win.hwnd, 'x': x, 'y': y, 'w': width, 'h': height}
+        # 鉤子送來的是「物理像素」，所以這裡存物理邊界，兩邊同一座標系才比得對
+        px, py, pw, ph = self._physical_rect(win.hwnd, (x, y, width, height))
+        self.menu_hook_state = {'hwnd': win.hwnd, 'x': px, 'y': py, 'w': pw, 'h': ph}
 
         @HOOKPROC
         def _mouse_hook(ncode, wparam, lparam):
@@ -1200,7 +1380,11 @@ class PetApp:
             if hook:
                 user32.UnhookWindowsHookEx(hook)
             try:
-                user32.ReleaseCapture()
+                # 只放掉「自己」的捕獲：無條件 ReleaseCapture() 會把桌寵正在
+                # 進行的拖曳捕獲一起搶走，接著放開事件就送不到桌寵 →
+                # self.drag 卡住、桌寵黏著滑鼠（2026-11-25 6.22 追蹤確認）。
+                if user32.GetCapture() == win.hwnd:
+                    user32.ReleaseCapture()
             except Exception:
                 pass
             if self.menu_win:
@@ -1214,7 +1398,8 @@ class PetApp:
             self.on_command(cmd)
 
     def on_command(self, cid):
-        self.sfx('menu_hit')
+        # 注意：不要在這裡再播 menu_hit——選單路徑已在上方播過一次，
+        # 重複呼叫會把上一個音效切斷，聽起來就是「突突」的機關槍聲。
         if cid == 1001:
             self.sfx('page_open')
             self.request_page('manual')
@@ -1269,6 +1454,12 @@ class PetApp:
             self.p['idle_hidden'] = not self.p['idle_hidden']
             if self.pet_win:
                 self.pet_win.show(not self.p['idle_hidden'])
+                if not self.p['idle_hidden']:
+                    # 分層視窗隱藏再顯示時，畫面與 z-order 可能失效：
+                    # 重新推一次 buffer，並強制拉回最上層（否則「顯示了卻看不到」）
+                    self.repaint_pet()
+                    user32.SetWindowPos(self.pet_win.hwnd, wintypes.HWND(-1), 0, 0, 0, 0,
+                                        0x0001 | 0x0002 | 0x0010 | 0x0040)
             C.log(self.cfg, 'pet menu: idle_hidden=%s' % self.p['idle_hidden'])
             event(self.cfg, 'menu_hide', hidden=self.p['idle_hidden'])
         elif cid == 1007:
@@ -1329,6 +1520,21 @@ class PetApp:
         """可注入時鐘（測試腳本可覆寫，不動真實時間）。"""
         return time.time()
 
+    def _left_down(self):
+        """左鍵目前是否真的按著（0x8000 = 按下）。用來收拾遺失的放開事件。"""
+        try:
+            return bool(user32.GetAsyncKeyState(0x01) & 0x8000)
+        except Exception:
+            return True          # 取不到就假設按著，維持原本行為（寧可不誤斷拖曳）
+
+    def _drop_stale_capture(self):
+        """把殘留的滑鼠捕獲還回去，否則懸停／離開判定會一直停在「按著」狀態。"""
+        try:
+            if self.pet_win and user32.GetCapture() == self.pet_win.hwnd:
+                user32.ReleaseCapture()
+        except Exception:
+            pass
+
     def hover_enter(self):
         if self.hover or self.anim or self.drag or not self.pet_win:
             return
@@ -1338,7 +1544,9 @@ class PetApp:
         self.hover_t0 = self._now()
         self.blink_next = self.hover_t0 + random.uniform(2.0, 3.2)
         self.blink_until = 0.0
-        self.sfx('peek')
+        if self.hover_t0 - self.peek_ts > 1.5:   # 貼著邊緣抖動時不要連續「嘀」
+            self.sfx('peek')
+            self.peek_ts = self.hover_t0
         user32.SetTimer(self.hwnd, WM_TIMER_HOVER, 110, None)
         self.hover_tick()
 
@@ -1364,6 +1572,19 @@ class PetApp:
         if not self.pet_win or not self.use_new_art:
             user32.KillTimer(self.hwnd, WM_TIMER_HOVER)
             return
+        if self.trace:
+            try:
+                C.log(self.cfg, 'hover tick hover=%s scale=%.3f eye=%s mouth=%s frame=%s' %
+                      (self.hover, self.hover_scale, self.hover_eye,
+                       self.hover_mouth, self.frame))
+            except Exception:
+                pass
+        if self.drag and not self._left_down():
+            self.drag = None              # 保險：放開事件遺失時自動結束拖曳
+            self._drop_stale_capture()
+            if self.frame == 'drag':
+                self.frame = 'idle'
+                self.repaint_pet()
         if self.drag or self.anim:
             return                        # 拖曳／警示動畫優先，先不覆蓋畫面
         now = self._now()
@@ -1510,9 +1731,9 @@ class PetApp:
             coord = dict((e[0], e[2]) for e in edges)[edge]
         tx0, ty0 = self._idle_pos()
         if edge in ('bottom', 'top'):
-            start = (tx0, coord - int(self.p['size']))
+            start = (tx0, coord - self.pet_size)
         else:
-            start = (coord - int(self.p['size']), ty0)
+            start = (coord - self.pet_size, ty0)
         self.anim = {'start': start, 'end': (tx0, ty0), 't0': time.time(),
                      'dur': float(self.p['alert_anim_sec']), 'edge': edge}
         if self.pet_win:
@@ -1748,8 +1969,16 @@ class PetApp:
             pos = self.pet_state.get('position') or self._idle_pos()
             x, y = self.clamp_pos(pos[0] if isinstance(pos, (list, tuple)) else pos[0][0],
                                   pos[1] if isinstance(pos, (list, tuple)) else pos[0][1])
+            # 舊狀態檔存的是「DPI 虛擬座標」（104 px 被系統撐成 130）。升級後
+            # 座標一律是物理像素，若不換算，桌寵會往左上跳一格。換算一次即可。
+            if not self.pet_state.get('px_unit'):
+                if abs(self.dpi - 1.0) > 1e-6:
+                    x, y = int(round(x * self.dpi)), int(round(y * self.dpi))
+                    x, y = self.clamp_pos(x, y)
+                self.pet_state['px_unit'] = 'physical'
+            self.pet_state['dpi'] = round(self.dpi, 3)
             self.pet_state['position'] = [x, y]
-            self.pet_win = Layered(int(self.p['size']), int(self.p['size']), (x, y), topmost=True)
+            self.pet_win = Layered(self.pet_size, self.pet_size, (x, y), topmost=True)
             self.repaint_pet()
             self.pet_win.show(not self.p['idle_hidden'])
             self.tray(NIM_ADD, tip=self.tip_text(), icon=self.tray_icon(False))
@@ -1759,9 +1988,10 @@ class PetApp:
             t = threading.Thread(target=self.worker, daemon=True)
             t.start()
             self.sfx('boot')
-            C.log(self.cfg, 'pet started size=%d sound=%s pos=%s' %
-                  (self.p['size'], self.sound, (x, y)))
-            event(self.cfg, 'boot', sound=self.sound, size=int(self.p['size']))
+            C.log(self.cfg, 'pet started size=%d(design %d) dpi=%.2f sound=%s pos=%s' %
+                  (self.pet_size, self.p['size'], self.dpi, self.sound, (x, y)))
+            event(self.cfg, 'boot', sound=self.sound, size=int(self.p['size']),
+                  px=self.pet_size, dpi=round(self.dpi, 3))
             msg = wintypes.MSG()
             while user32.GetMessageW(ctypes.byref(msg), 0, 0, 0) > 0:
                 user32.TranslateMessage(ctypes.byref(msg))
@@ -1815,8 +2045,15 @@ def cmd_health(cfg):
                 kernel32.CloseHandle(h)
         except Exception:
             alive = False
+    try:
+        _sz = int(load_pet_config(cfg)['size'])
+    except Exception:
+        _sz = int(PET_DEFAULTS['size'])
     out = {
         'alive': alive, 'pid': pid,
+        'dpi_aware': enable_dpi_awareness(),
+        'dpi_scale': round(dpi_scale(), 3),
+        'pet_px': int(round(_sz * dpi_scale())),
         'last_heartbeat': pst.get('last_heartbeat'),
         'ui_state': pst.get('ui_state'),
         'sounds_enabled': pst.get('sounds_enabled'),
@@ -1883,6 +2120,8 @@ def cmd_selftest(cfg):
 
 
 def main(argv=None):
+    # 必須在任何視窗建立前開啟 DPI 感知，否則 125% 縮放下畫面會被系統拉伸發糊
+    aware = enable_dpi_awareness()
     argv = list(sys.argv[1:] if argv is None else argv)
     cfg_path = None
     if '--config' in argv:

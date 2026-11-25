@@ -122,9 +122,11 @@ def generate():
     if not os.path.isdir(ASSETS):
         os.makedirs(ASSETS)
     paths = []
-    # 16 px 托盤要以清晰為先：小尺寸直接由大圖面積平均而來，不再二次縮放
+    # 16 px 托盤要以清晰為先：小尺寸直接由大圖面積平均而來，不再二次縮放。
+    # 也備好 20／24／40 —— 125%／150% 縮放下托盤實際要 20／24 px，
+    # 若只給 16 就會被系統再放大一次（發糊）。
     for name, alert in (('tray', False), ('tray-alert', True)):
-        imgs = [(s, draw(s, alert)) for s in (64, 32, 16)]
+        imgs = [(s, draw(s, alert)) for s in (64, 48, 40, 32, 24, 20, 16)]
         p = os.path.join(ASSETS, name + '.ico')
         with open(p, 'wb') as f:
             f.write(_ico_bytes(imgs))

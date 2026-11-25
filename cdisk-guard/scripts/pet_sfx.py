@@ -23,6 +23,7 @@ r"""pet_sfx.py — DiskGuard 桌寵音效引擎（純 stdlib，零外部音檔�
 """
 import os
 import math
+import time
 import wave
 import struct
 import random
@@ -48,10 +49,10 @@ TABLE = {
     'degraded': ('noise_square', [180], 0.55),
     'serve':    ('blip2', [784, 1047], 0.30),
     # ---- 特别事件 ----
-    'panel_open':   ('blip2', [660, 880], 0.16),
+    'panel_open':   ('blip1', [660], 0.12),
     'panel_close':  ('slide', [660, 440], 0.16),
-    'menu_open':    ('blip2', [520, 700], 0.14),
-    'menu_hit':     ('blip2', [880, 1100], 0.12),
+    'menu_open':    ('blip1', [520], 0.10),
+    'menu_hit':     ('blip1', [880], 0.09),
     'alert_enter':  ('siren', [820, 640], 0.75),
     'scan_start':   ('sweep', [400, 900], 0.35),
     'scan_done':    ('arp', [587, 784, 1047], 0.48),
@@ -79,6 +80,14 @@ def _samples(kind, freqs, dur):
         for i in range(n):
             t = i / RATE
             env = (0.5 - 0.5 * math.cos(2 * math.pi * t / dur))
+            out.append(math.sin(2 * math.pi * a * t) * env)
+    elif kind == 'blip1':
+        # 單一短音（乾淨的「嘀」）。舊的 blip2 是兩個音，
+        # 兩個動作接連觸發時聽起來像「突突」的機槍聲 → 點擊類改用單音。
+        for i in range(n):
+            t = i / RATE
+            env = min(1.0, i / (RATE * 0.006))
+            env *= min(1.0, (n - i) / (RATE * 0.03))
             out.append(math.sin(2 * math.pi * a * t) * env)
     elif kind == 'blip2':
         half = n // 2
@@ -173,8 +182,23 @@ def generate_all(force=False):
     return {k: generate(k, force=force) for k in TABLE}
 
 
+# 播放節流：winsound 一次只播一個，重疊呼叫會互相切斷（聽感＝「突突」）
+MIN_GAP = 0.12
+PRIORITY = {'alert', 'alert_enter', 'scan', 'scan_done', 'happy',
+            'serve', 'exit', 'paused', 'degraded', 'delete_done', 'boot'}
+_LAST = {'name': None, 'ts': 0.0, 'dur': 0.0}
+
+
 def play(name, enabled=True):
-    """非同步播放；音效停用／名稱不存在／winsound 不可用時靜默返回。"""
+    """非同步播放；音效停用／名稱不存在／winsound 不可用時靜默返回。
+
+    winsound 的 SND_ASYNC 同時間只能有一個音效——新的會**打斷**舊的。
+    若兩個動作在極短時間內各叫一次（例如點一下 → 開面板），
+    聽起來就是一串被切斷的「突突」聲。所以這裡加兩道節流：
+      1) 全域最小間隔 MIN_GAP：上一個剛響就不疊加（重要音效可插隊）
+      2) 同名音效在自身時長內不重播：防止懸停抖動／連點造成機關槍
+    """
+    global _LAST
     if not enabled or name not in TABLE:
         return False
     p = wav_path(name)
@@ -182,10 +206,17 @@ def play(name, enabled=True):
         p = generate(name)
     if not p:
         return False
+    now = time.time()
+    gap = now - _LAST['ts']
+    if name == _LAST['name'] and gap < _LAST['dur'] * 0.9:
+        return False
+    if gap < MIN_GAP and name not in PRIORITY:
+        return False
     try:
         import winsound
         winsound.PlaySound(p, winsound.SND_ASYNC | winsound.SND_FILENAME |
                            winsound.SND_NODEFAULT)
+        _LAST = {'name': name, 'ts': now, 'dur': TABLE[name][2]}
         return True
     except Exception:
         return False
