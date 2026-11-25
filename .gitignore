@@ -1,0 +1,24 @@
+# 只把程式與文件推上去，其餘留本機
+# 執行時產生的資料（日誌、狀態、清單、診斷腳本、截圖）
+cdisk-guard/data/
+
+# 打包產物與舊清理產出（含個人檔案清單與備份，不宜公開）
+dist/
+cdisk-cleanup/
+_delete_test/
+backup/
+prototypes/
+
+# 開發過程的工作筆記（含本機路徑與內部紀錄）
+HANDOFF.md
+STATUS.md
+MEMORY.md
+deskpet-*.md
+deskpet-*.html
+
+# Python 快取
+__pycache__/
+*.pyc
+
+# 壓縮檔
+*.zip

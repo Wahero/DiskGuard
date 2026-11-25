@@ -1,0 +1,54 @@
+{
+  "_comment": "cdisk-guard 設定。所有路徑相對於技能根目錄，除非以磁碟機代號開頭。修改後不需重裝，watch 每次循環會重新讀取。",
+  "drive": "C:\\",
+  "alert": {
+    "threshold_pct": 2.0,
+    "warn_pct": 10.0,
+    "title": "磁盤剩餘空間",
+    "check_interval_sec": 300,
+    "cooldown_sec": 21600,
+    "notify_on_warn_pct": false
+  },
+  "weekly": {
+    "weekday": 0,
+    "cpu_max_pct": 25,
+    "cpu_sample_sec": 1.0,
+    "earliest_hour": 0,
+    "latest_hour": 23,
+    "run_once_per_day": true
+  },
+  "scan": {
+    "budget_sec": 600,
+    "big_file_mb": 100,
+    "top_n": 40,
+    "skip_reparse": true,
+    "max_age_hours": 24,
+    "serve_budget_sec": 180
+  },
+  "delete": {
+    "default_tiers": ["A"],
+    "default_exclusions": ["npm-cache"],
+    "default_exclusions_note": "沿用 2026-11-23 使用者指示：跳過不刪除 npm-cache",
+    "small_backup_mb": 100,
+    "batch_size": 10,
+    "allow_direct_delete": true,
+    "require_modal_confirm": true,
+    "auto_empty_recycle_bin": false,
+    "auto_empty_recycle_bin_note": "預設關閉：2026-11-23 觀測到 4.5 GB 回收站內容屬另一使用者 SID，未獲授權前不自動清除；執行結果會逐 SID 列出殘留。",
+    "locked_paths": ["$recycle.bin"],
+    "special_actions": {
+      "thumbcache_only": ["\\microsoft\\windows\\explorer"],
+      "empty_recycle_bin": ["c:\\$recycle.bin"]
+    }
+  },
+  "server": {
+    "host": "127.0.0.1",
+    "port": 0,
+    "app_browser": true
+  },
+  "paths": {
+    "output_dir": "data",
+    "page_filename": "C盘清理清单.html",
+    "log_filename": "cdisk-guard.log"
+  }
+}
