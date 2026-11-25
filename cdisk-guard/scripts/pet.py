@@ -762,6 +762,19 @@ class PetApp:
         self.auto_open = bool(pcfg.get('auto_open_page_after_scan', True))
         self.idle_close = int(pcfg.get('serve_idle_close_sec', 600))
         self.last_scan_ts = 0.0
+        # 清理進度／結果回饋（B5、B6）：桌寵讀 cdiskctl 寫的兩個檔案
+        self.bubble_win = None
+        self.bubble_until = 0.0
+        self.bubble_text = ''
+        self.clean_prog = None          # 上次看到的進度快照
+        self.clean_seen_seq = None      # 已提示過的 last_delete.seq
+        self.clean_seen_ts = 0.0        # 已提示過的 last_delete.ts（seq 會因檔案重建而歸零）
+        try:
+            prev = C.read_last_delete(self.cfg)
+            self.clean_seen_seq = int(prev.get('seq')) if prev else 0
+            self.clean_seen_ts = float(prev.get('ts') or 0) if prev else 0.0
+        except Exception:
+            self.clean_seen_seq = 0
 
     # ---------- 狀態 ----------
     def save_state(self):
@@ -1773,7 +1786,164 @@ class PetApp:
             self.pet_win.move(x, y)
         self.repaint_pet()
 
+    # ---------- 清理進度氣泡（B5）與結果提示（B6） ----------
+    def _bubble_geometry(self):
+        W, H = self._fs(208), self._fs(48)
+        sx = user32.GetSystemMetrics(SM_XVIRTUALSCREEN)
+        sy = user32.GetSystemMetrics(SM_YVIRTUALSCREEN)
+        sw = user32.GetSystemMetrics(SM_CXVIRTUALSCREEN)
+        sh = user32.GetSystemMetrics(SM_CYVIRTUALSCREEN)
+        px, py, pw, ph = 0, 0, 0, 0
+        if self.pet_win:
+            try:
+                l, t, r, b = self.pet_win.rect()
+                px, py, pw, ph = l, t, max(0, r - l), max(0, b - t)
+            except Exception:
+                pass
+        x = px + pw // 2 - W // 2
+        y = py - H - self._px(6)
+        if y < sy + 4:                       # 上方沒空間就改放下面
+            y = py + ph + self._px(6)
+        x = max(sx + 4, min(x, sx + sw - W - 4))
+        y = max(sy + 4, min(y, sy + sh - H - 4))
+        return W, H, x, y
+
+    def show_bubble(self, text, frac=None, sub='', hold=3.0):
+        """在桌寵旁邊顯示一個小氣泡（清理進度／執行結果）。"""
+        try:
+            W, H, x, y = self._bubble_geometry()
+            if self.bubble_win and (self.bubble_win.w != W or self.bubble_win.h != H):
+                self.bubble_win.close()
+                self.bubble_win = None
+            if not self.bubble_win:
+                self.bubble_win = Layered(W, H, (x, y), topmost=True, opaque=True)
+                rgn = gdi32.CreateRoundRectRgn(0, 0, W + 1, H + 1,
+                                               self._fs(10), self._fs(10))
+                if rgn:
+                    user32.SetWindowRgn(self.bubble_win.hwnd, rgn, True)
+                # 點擊穿透：氣泡只是提示，不可擋住桌寵或桌面操作
+                ex = user32.GetWindowLongW(self.bubble_win.hwnd, -20)
+                user32.SetWindowLongW(self.bubble_win.hwnd, -20, ex | 0x00000020)
+            win = self.bubble_win
+            win.move(x, y)
+            S = self._fs
+
+            def draw(hdc):
+                for yy in range(H):
+                    t = yy / float(max(1, H - 1))
+                    _fill_dib(win, 0, yy, W, yy + 1,
+                              BGR(int(34 + 8 * t), int(40 + 7 * t), int(50 + 6 * t)))
+                _fill_dib(win, 0, 0, S(3), H, BGR(96, 164, 255))
+                _text(hdc, S(14), S(6), text, S(13), BGR(234, 242, 252), True)
+                if frac is not None:
+                    _fill_dib(win, S(14), S(30), W - S(14), S(35), BGR(56, 66, 84))
+                    wpx = int((W - S(28)) * max(0.0, min(1.0, float(frac))))
+                    if wpx > 0:
+                        _fill_dib(win, S(14), S(30), S(14) + wpx, S(35),
+                                  BGR(96, 176, 255))
+                if sub:
+                    _text(hdc, S(14), S(36) if frac is not None else S(28),
+                          sub, S(10), BGR(146, 162, 184))
+            win.paint(draw)
+            win.show(True)
+            self.bubble_text = text
+            self.bubble_until = time.time() + float(hold)
+        except Exception as ex:
+            C.log(self.cfg, 'pet bubble error: %s' % ex)
+
+    def hide_bubble(self):
+        if self.bubble_win:
+            try:
+                self.bubble_win.show(False)
+            except Exception:
+                pass
+        self.bubble_until = 0.0
+
+    def _announce_delete(self, last):
+        """有新的一次刪除結果 → 氣泡＋音效＋事件（B6）。"""
+        st = str(last.get('status') or '')
+        eff = float(last.get('effective_mb') or 0)
+        gain = float(last.get('observed_gain_mb') or 0)
+        free = last.get('free_pct')
+        if st == 'EXECUTED':
+            txt = '已清理 %.2f GB' % (max(eff, gain) / 1024.0)
+        elif st == 'PARTIAL':
+            txt = '清理完成 · 有殘留'
+        elif st == 'ABORTED':
+            txt = '清理被中斷'
+        else:
+            txt = '清理結果：%s' % (st or '未知')
+        sub = ('剩餘 %.2f%%' % float(free)) if free is not None else ''
+        self.show_bubble(txt, sub=sub, hold=6.0)
+        self.sfx('alert' if st == 'ABORTED' else 'happy')
+        event(self.cfg, 'delete_done', status=st,
+              removed=last.get('fully_removed'), partial=last.get('partial'),
+              effective_mb=eff, free_pct=free)
+        C.log(self.cfg, 'pet notified delete done: status=%s removed=%s partial=%s gain=%.1fMB'
+              % (st, last.get('fully_removed'), last.get('partial'), gain))
+
+    def _poll_jobs(self, cfg):
+        """每秒看一次清理進度與結果；任何錯誤都不應影響守護。"""
+        if self.bubble_until and time.time() > self.bubble_until:
+            self.hide_bubble()
+        try:
+            prog = C.progress_running(cfg)
+        except Exception:
+            prog = None
+        if prog:
+            done = int(prog.get('done') or 0)
+            total = int(prog.get('total') or 0)
+            frac = (done / float(total)) if total else 0.0
+            sub = '已移除 %d 項 · 殘留 %d 項' % (int(prog.get('removed') or 0),
+                                              int(prog.get('remaining') or 0))
+            self.show_bubble('清理中 %d/%d' % (done, total) if total else '清理中…',
+                             frac=frac, sub=sub, hold=2.5)
+            self.clean_prog = prog
+        try:
+            last = C.read_last_delete(cfg)
+        except Exception:
+            last = None
+        if last:
+            try:
+                seq = int(last.get('seq') or 0)
+                ts = float(last.get('ts') or 0)
+            except (TypeError, ValueError):
+                seq, ts = 0, 0.0
+            # 以 ts 判斷「是否有新結果」：seq 只是方便人看，檔案若被刪掉會從 1 重來
+            if ts > self.clean_seen_ts + 0.5:
+                self.clean_seen_ts = ts
+                self.clean_seen_seq = seq
+                self._announce_delete(last)
+
     # ---------- 背景 worker（F7/F9/F10） ----------
+    def maybe_weekly(self, cfg, disk=None, now=None):
+        """週期分析閘門（B7）：到期且 CPU 閒置就排一次。
+
+        抽成方法才能用注入時鐘驗證，不必真的等到週一、也不必真的跑全盤掃描。
+        回傳 (是否已排程, 原因)。
+        """
+        if self.scan_busy.locked():
+            return False, 'scan busy'
+        if time.time() < self.paused_until:
+            return False, 'paused'
+        with self.state_lock:
+            st = C.read_state(cfg) or {}
+        disk = disk or C.disk_info(cfg['drive'])
+        ok, why = C.weekly_should_run(cfg, st, disk, now=now)
+        if not ok:
+            return False, why
+        st['last_weekly_attempt'] = C.now_str()
+        st['last_weekly_reason'] = why
+        try:
+            with self.state_lock:
+                C.write_state(cfg, st)
+        except Exception:
+            pass
+        C.log(cfg, 'weekly due (%s)' % why)
+        event(cfg, 'weekly_due', why=why)
+        self._run_scan_flow(cfg, 'weekly')
+        return True, why
+
     def _run_scan_flow(self, cfg, kind):
         """背景分析；kind ∈ alert / manual / weekly。不阻塞 UI 訊息迴圈。"""
         if not self.scan_busy.acquire(blocking=False):
@@ -1788,6 +1958,16 @@ class PetApp:
                 with self.state_lock:
                     st = C.read_state(cfg) or {}
                     level, scan = C.run_weekly(cfg, st, disk, 'pet weekly monitor')
+                # run_weekly 只寫 last_weekly_date；把結果等級與時間也留下來，
+                # 事後能判斷「那次分析到底做了沒、結論是什麼」（B7）
+                try:
+                    with self.state_lock:
+                        st2 = C.read_state(cfg) or {}
+                        st2['last_weekly_status'] = level
+                        st2['last_weekly_ts'] = time.time()
+                        C.write_state(cfg, st2)
+                except Exception:
+                    pass
             else:
                 scan = C.do_scan(cfg)
                 C.do_report(cfg, scan)
@@ -1927,17 +2107,15 @@ class PetApp:
                     else:
                         self.tray_icon(False)
                         self.tray(tip=self.tip_text())
-                        if now >= self.paused_until:
-                            with self.state_lock:
-                                st = C.read_state(cfg) or {}
-                            ok, why = C.weekly_should_run(cfg, st, d)
-                            if ok:
-                                self._run_scan_flow(cfg, 'weekly')
+                    # 週期分析與警示狀態脫鉤：原本這段寫在 else 裡，磁碟低於門檻時
+                    # 永遠進不到，結果「每週一分析」在最需要它的時候反而不會跑（B7）。
+                    self.maybe_weekly(cfg, disk=d)
                     next_check = now + int(self.p.get('check_interval_sec', 300))
                 if now >= next_beat:
                     self.save_state()
                     next_beat = now + int(self.p['heartbeat_sec'])
                 self._serve_idle_check(cfg)
+                self._poll_jobs(cfg)
             except Exception as ex:
                 C.log(self.cfg, 'pet worker error: %s' % ex)
                 event(self.cfg, 'worker_error', ok=False)
@@ -2007,7 +2185,7 @@ class PetApp:
                     shell32.Shell_NotifyIconW(NIM_DELETE, ctypes.byref(self.nid))
             except Exception:
                 pass
-            for w in (self.menu_win, self.usage_win, self.pet_win):
+            for w in (self.bubble_win, self.menu_win, self.usage_win, self.pet_win):
                 if w:
                     w.close()
             pet_sfx.stop()
@@ -2061,6 +2239,17 @@ def cmd_health(cfg):
         'auto_open_page_after_scan': pst.get('auto_open_page_after_scan'),
         'serve_idle_close_sec': pst.get('serve_idle_close_sec'),
         'serve_listening': bool(C._ACTIVE_SERVER),
+        'clean_running': (lambda p: bool(p) and
+                          {'done': p.get('done'), 'total': p.get('total')}
+                          )(C.progress_running(cfg)),
+        'last_delete': (lambda d: d and {k: d.get(k) for k in
+                                         ('seq', 'status', 'target_count',
+                                          'fully_removed', 'partial',
+                                          'effective_mb', 'free_pct', 'created')}
+                        )(C.read_last_delete(cfg)),
+        'last_weekly': {'date': st.get('last_weekly_date'),
+                        'status': st.get('last_weekly_status'),
+                        'attempt': st.get('last_weekly_attempt')},
         'events': ev,
     }
     print(json.dumps(out, ensure_ascii=False, indent=2))
@@ -2114,6 +2303,19 @@ def cmd_selftest(cfg):
                and int(p['serve_idle_close_sec']) >= 30,
                'auto_open=%s idle=%ss'
                % (p.get('auto_open_page_after_scan'), p.get('serve_idle_close_sec'))))
+    ok.append(('B5/B6 progress API', all(hasattr(C, k) for k in
+                                         ('read_progress', 'read_last_delete',
+                                          'progress_running', 'progress_path',
+                                          'last_delete_path')), ''))
+    try:
+        pg = C.read_progress(cfg)
+        ld = C.read_last_delete(cfg)
+        ok.append(('B5/B6 files', pg is None or isinstance(pg, dict),
+                   'progress=%s last_delete=%s'
+                   % ('none' if pg is None else pg.get('phase'),
+                      'none' if ld is None else ld.get('status'))))
+    except Exception as ex:
+        ok.append(('B5/B6 files', False, str(ex)))
     for name, good, note in ok:
         print('%-18s %s %s' % (name, 'OK' if good else 'FAIL', note))
     return 0 if all(g for _, g, _ in ok) else 1

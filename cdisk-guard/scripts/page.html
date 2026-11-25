@@ -113,6 +113,7 @@ footer{margin-top:44px;padding-top:16px;border-top:1px solid var(--line);color:v
 <div class="grid" id="kpis"></div>
 <div class="bar" id="diskbar"><i style="width:0%"></i></div>
 <div class="sub" id="diskhint"></div>
+<div id="lastrun" style="display:none"></div>
 
 <div class="notice">✅ <b>安全度分級：</b>A 檔＝臨時檔／快取／安裝包殘留，可放心刪；B 檔＝軟體資料或自建目錄，需你判斷；C 檔＝系統元件／個人資料／憑證，<b>checkbox 已鎖定，後端也會再次拒絕</b>。<b>預設已勾選所有 A 檔</b>（依設定排除的項目除外）。</div>
 <div class="danger" id="dangerbox">⚠️ <b>此操作非常危險，可能導致不可逆的數據丟失！</b> 本頁由只綁 127.0.0.1 的本機後端提供，按下「執行刪除」會先弹出確認視窗逐項列出完整路徑；再次確認後<b>直接刪除</b>勾選項目，不經回收站。僅 &lt;100 MB 小項有 ZIP 備份可還原。</div>
@@ -321,12 +322,41 @@ document.getElementById('btn-delete').onclick = ()=>{
   mf.querySelector('#m-go').onclick = async ()=>{
     const go = mf.querySelector('#m-go');
     go.disabled = true; go.textContent = '執行中，請勿關閉…';
+    const mb = document.getElementById('mb'), mfoot = document.getElementById('mf');
+    mb.innerHTML = '<div class="notice"><b>刪除執行中</b>，請勿關閉本頁。進度每 0.7 秒更新一次。</div>'
+      + '<div class="bar"><i id="pg-bar" style="width:0%"></i></div>'
+      + '<div class="sub" id="pg-txt">準備中…</div>'
+      + '<div class="sub" id="pg-cur" style="word-break:break-all"></div>';
+    mfoot.innerHTML = '';
+    let stopped = false;
+    const poll = async ()=>{
+      if(stopped) return;
+      try{
+        const pr = await fetch('/api/progress',{cache:'no-store'});
+        const pj = await pr.json();
+        const p = pj.progress || {};
+        const done = p.done||0, total = p.total||0;
+        const pct = total ? Math.round(done*100/total) : 0;
+        const bar = document.getElementById('pg-bar');
+        if(bar) bar.style.width = pct+'%';
+        const t = document.getElementById('pg-txt');
+        if(t) t.innerHTML = '<b>'+done+' / '+(total||'?')+'</b>（'+pct+'%）｜已移除 '
+          + (p.removed||0)+' 項、殘留 '+(p.remaining||0)+' 項'
+          + (pj.running ? '' : '｜<b>收尾中…</b>');
+        const c = document.getElementById('pg-cur');
+        if(c) c.textContent = p.current ? ('目前：'+p.current) : '';
+      }catch(e){}
+      setTimeout(poll, 700);
+    };
+    poll();
     try{
       const r = await fetch('/api/delete',{method:'POST',headers:{'Content-Type':'application/json'},
         body:JSON.stringify({token:TOKEN, confirm:true, paths:sel.map(x=>x.path)})});
       const j = await r.json();
+      stopped = true;
       showResult(j);
     }catch(e){
+      stopped = true;
       showModal('執行失敗', '<div class="danger">'+esc(e)+'</div>',
         '<button id="m-cancel2" class="ghost">關閉</button>');
       document.getElementById('m-cancel2').onclick = closeModal;
@@ -378,7 +408,41 @@ async function closePage(){
 }
 document.getElementById('btn-close').onclick = closePage;
 
+function renderLastRun(){
+  const L = META.last_delete;
+  if(!L) return;
+  const el = document.getElementById('lastrun');
+  if(!el) return;
+  const NAME = {EXECUTED:'✅ 全部完成', PARTIAL:'🟡 部分殘留', ABORTED:'⛔ 被中斷'};
+  el.className = (L.status==='EXECUTED') ? 'notice' : 'warn';
+  el.innerHTML = '<b>上次執行</b>　'+(L.created||'—')+'　｜　'+(NAME[L.status]||L.status||'—')
+    + '　｜　執行 <b>'+(L.target_count||0)+'</b> 項，完整移除 '+(L.fully_removed||0)
+    + '、殘留 '+(L.partial||0)
+    + '　｜　實際可釋放 <b>'+fmt(L.effective_mb||0)+'</b>'
+    + '　｜　執行後剩餘 '+(L.free_pct!=null?L.free_pct+'%':'—')
+    + '　｜　<a href="#" id="lnk-last">執行紀錄</a>';
+  el.style.display = '';
+  const a = el.querySelector('#lnk-last');
+  if(a) a.onclick = (ev)=>{
+    ev.preventDefault();
+    const mf2 = showModal('上次執行紀錄',
+      '<div class="result"><table><tr><th>項目</th><th>數值</th></tr>'
+      + [['狀態', L.status],['開始', L.created],['執行項數', L.target_count],
+         ['完整移除', L.fully_removed],['殘留', L.partial],
+         ['實際可釋放', fmt(L.effective_mb||0)],['觀測淨增', fmt(L.observed_gain_mb||0)],
+         ['執行後剩餘比例', (L.free_pct!=null?L.free_pct+'%':'—')]]
+        .map(r=>'<tr><td>'+esc(r[0])+'</td><td class="sz">'+esc(r[1])+'</td></tr>').join('')
+      + '</table></div>'
+      + '<div class="warn">manifest：<code>'+esc(L.manifest||'—')+'</code><br>'
+      + '紀錄：<code>'+esc(L.log_path||'—')+'</code></div>',
+      '<button id="m-lc" class="ghost">關閉</button>');
+    mf2.querySelector('#m-lc').onclick = closeModal;
+  };
+  return false;
+}
+
 renderKPI();
+renderLastRun();
 renderTables();
 updateStat();
 if(!API){

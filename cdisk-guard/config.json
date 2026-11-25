@@ -15,7 +15,8 @@
     "cpu_sample_sec": 1.0,
     "earliest_hour": 0,
     "latest_hour": 23,
-    "run_once_per_day": true
+    "run_once_per_day": true,
+    "catch_up_days": 7
   },
   "scan": {
     "budget_sec": 600,

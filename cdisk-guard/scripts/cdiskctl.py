@@ -651,6 +651,73 @@ def _write_json_atomic(path, obj):
     os.replace(tmp, path)
 
 
+# ------------------------------------------------------- 進度／結果回寫
+# 刪除可能跑幾分鐘（337 項、20+ GB）。這段時間網頁與桌寵都必須看得到進度，
+# 結束後也要留下「上次清了多少」給桌寵提示、給網頁顯示。
+def progress_path(cfg):
+    return os.path.join(out_dir(cfg), 'delete_progress.json')
+
+
+def last_delete_path(cfg):
+    return os.path.join(out_dir(cfg), 'last_delete.json')
+
+
+def read_json_quiet(path):
+    try:
+        with open(path, encoding='utf-8') as f:
+            return json.load(f)
+    except Exception:
+        return None
+
+
+def read_progress(cfg):
+    return read_json_quiet(progress_path(cfg))
+
+
+def read_last_delete(cfg):
+    return read_json_quiet(last_delete_path(cfg))
+
+
+def progress_running(cfg, max_age_sec=20):
+    """進度檔是否代表「正在刪除」。超過 max_age_sec 沒更新就視為已中止。"""
+    p = read_progress(cfg)
+    if not p or p.get('status') != 'RUNNING':
+        return None
+    if time.time() - float(p.get('ts') or 0) > max_age_sec:
+        return None
+    return p
+
+
+def _record_last_delete(cfg, result):
+    """把這次執行摘要寫成 last_delete.json（seq 遞增，供桌寵判斷「有新結果」）。"""
+    prev = read_last_delete(cfg) or {}
+    try:
+        seq = int(prev.get('seq') or 0) + 1
+    except (TypeError, ValueError):
+        seq = 1
+    d = disk_info(cfg['drive'])
+    summary = {
+        'seq': seq,
+        'ts': time.time(),
+        'created': result.get('created'),
+        'status': result.get('status'),
+        'target_count': result.get('target_count'),
+        'fully_removed': result.get('fully_removed'),
+        'partial': result.get('partial'),
+        'effective_mb': result.get('effective_mb'),
+        'observed_gain_mb': result.get('observed_gain_mb'),
+        'free_after_mb': result.get('free_after_mb'),
+        'free_pct': d['free_pct'],
+        'manifest': result.get('manifest'),
+        'log_path': result.get('log_path'),
+    }
+    try:
+        _write_json_atomic(last_delete_path(cfg), summary)
+    except Exception:
+        pass
+    return summary
+
+
 # ---------------------------------------------------------------- 網頁
 def render_page(cfg, scan, items, api=False, token=''):
     tpl_path = os.path.join(SCRIPTS, 'page.html')
@@ -666,6 +733,8 @@ def render_page(cfg, scan, items, api=False, token=''):
         'threshold_pct': cfg['alert']['threshold_pct'],
         'exclusions': cfg['delete'].get('default_exclusions', []),
         'default_tiers': cfg['delete'].get('default_tiers', ['A']),
+        'last_delete': read_last_delete(cfg),
+        'progress': read_progress(cfg),
     }
 
     def j(o):
@@ -837,8 +906,12 @@ def _resume_paths(cfg, manifest_path, items):
     return paths, dropped
 
 
-def do_delete(cfg, paths, dry_run=False, scan=None):
-    """依 2026-11-23 的流程：manifest → 小項備份 → 分批直接刪除 → 逐項複核 → 紀錄。"""
+def do_delete(cfg, paths, dry_run=False, scan=None, progress=None):
+    """依 2026-11-23 的流程：manifest → 小項備份 → 分批直接刪除 → 逐項複核 → 紀錄。
+
+    progress：可選回呼 `fn(payload)`，每次進度更新時被呼叫（網頁用來推 SSE／輪詢）。
+    進度同時以原子寫入 `delete_progress.json`，桌寵與其他行程都能讀到。
+    """
     scan = scan or load_scan(cfg) or do_scan(cfg)
     items = build_items(cfg, scan)
     targets, rejected = validate_targets(cfg, paths, items)
@@ -864,6 +937,35 @@ def do_delete(cfg, paths, dry_run=False, scan=None):
                               'action': t['action'], 'tier': t['tier']}
                              for t in targets]
         return result
+
+    # 0) 進度上報：網頁輪詢 delete_progress.json，桌寵也讀同一份
+    prog = {
+        'status': 'RUNNING', 'phase': 'prepare', 'stamp': stamp,
+        'done': 0, 'total': len(targets), 'removed': 0, 'remaining': 0,
+        'current': '', 'target_mb': result['target_mb'],
+        'effective_mb': result['effective_mb'],
+        'started_at': result['started_at'], 'ts': time.time(),
+        'pid': os.getpid(), 'free_pct': disk_info(cfg['drive'])['free_pct'],
+    }
+    last_pub = [0.0]
+
+    def pub(force=False, **kw):
+        prog.update(kw)
+        prog['ts'] = time.time()
+        if not force and prog['ts'] - last_pub[0] < 0.5:
+            return                      # 逐項更新只在記憶體，落盤最多 2 次/秒
+        last_pub[0] = prog['ts']
+        try:
+            _write_json_atomic(progress_path(cfg), prog)
+        except Exception:
+            pass
+        if progress:
+            try:
+                progress(dict(prog))
+            except Exception:
+                pass
+
+    pub(force=True)
 
     # 1) manifest
     manifest = dict(result)
@@ -942,9 +1044,13 @@ def do_delete(cfg, paths, dry_run=False, scan=None):
                 else:
                     rec['remaining'] = 0
                 outcomes.append(rec)
+                pub(phase='deleting', done=len(outcomes), current=p,
+                    removed=sum(1 for o in outcomes if not o['after']),
+                    remaining=sum(1 for o in outcomes if o['after']))
             # 每批後複核；若有非預期例外則記錄但不中斷（逐項容錯）
             log(cfg, 'delete batch %d/%d done' %
                 (bi // bsize + 1, math.ceil(len(targets) / bsize)))
+            pub(force=True)
             checkpoint()
     except BaseException as e:
         # 逾時、被外部安全鉤子中止、KeyboardInterrupt 等：保留已完成的成績，
@@ -969,6 +1075,10 @@ def do_delete(cfg, paths, dry_run=False, scan=None):
     if aborted:
         manifest['aborted_reason'] = aborted
     checkpoint()
+    pub(force=True, status=result['status'], phase='done', current='',
+        done=len(outcomes), removed=result['fully_removed'],
+        remaining=result['partial'],
+        aborted_reason=result.get('aborted_reason'))
 
     # 4) 回收站：預設只回報殘留；啟用設定才清空（避免動到他人 SID 資料）
     if cfg['delete'].get('auto_empty_recycle_bin', False):
@@ -1029,6 +1139,11 @@ def do_delete(cfg, paths, dry_run=False, scan=None):
     log(cfg, 'delete done: targets=%d fully=%d partial=%d gain=%.1f MB' %
         (len(targets), result['fully_removed'], result['partial'],
          result['observed_gain_mb']))
+    # 回寫「上次執行」摘要：桌寵據此提示，網頁據此顯示，不用人去翻 execution_log.md
+    try:
+        result['last_delete'] = _record_last_delete(cfg, result)
+    except Exception:
+        pass
     return result
 
 
@@ -1078,7 +1193,17 @@ class GuardServer:
                                 'meta': {'created': outer.scan['created'],
                                          'items': len(outer.items),
                                          'truncated': outer.scan['truncated']},
+                                'progress': read_progress(outer.cfg),
+                                'last_delete': read_last_delete(outer.cfg),
                                 'token': outer.token})
+                elif path == '/api/progress':
+                    # 網頁在刪除期間每 0.7 s 輪詢；running=False 代表已結束／已中止
+                    p = read_progress(outer.cfg)
+                    self._json({'ok': True,
+                                'running': bool(progress_running(outer.cfg)),
+                                'progress': p,
+                                'disk': disk_info(outer.cfg['drive']),
+                                'last_delete': read_last_delete(outer.cfg)})
                 elif path == '/favicon.ico':
                     self._send(204, b'', 'image/x-icon')
                 else:
@@ -1245,31 +1370,53 @@ def do_alert(cfg, disk, extra_line='', auto_close_sec=None,
     return {'choice': 'A', 'action': 'serve', 'url': srv.url, 'server': srv}
 
 
-def weekly_should_run(cfg, state, disk):
+def weekly_should_run(cfg, state, disk, now=None):
+    """是否該做一次週期分析。now 可注入，測試不必等到週一。
+
+    多一條「逾期補做」：若上次分析已超過 catch_up_days（預設 7 天）或從未做過，
+    就不必再等下一个週一——機器人週一關機、或當天 CPU 忙，本來就會整週漏掉。
+    """
     w = cfg['weekly']
-    now = datetime.datetime.now()
-    if now.weekday() != w.get('weekday', 0):
+    now = now or datetime.datetime.now()
+    today = now.date().isoformat()
+    last = state.get('last_weekly_date')
+    if w.get('run_once_per_day', True) and last == today:
+        return False, 'already done today'
+    on_due_day = now.weekday() == w.get('weekday', 0)
+    catch_days = int(w.get('catch_up_days', 7) or 0)
+    overdue = False
+    if catch_days > 0:
+        if not last:
+            overdue = True
+        else:
+            try:
+                overdue = (now.date() - datetime.date.fromisoformat(str(last))).days >= catch_days
+            except ValueError:
+                overdue = True
+    if not on_due_day and not overdue:
         return False, 'not monday'
     if not (w.get('earliest_hour', 0) <= now.hour <= w.get('latest_hour', 23)):
         return False, 'outside hour window'
-    if w.get('run_once_per_day', True) and \
-            state.get('last_weekly_date') == now.date().isoformat():
-        return False, 'already done today'
     cpu = cpu_usage(w.get('cpu_sample_sec', 1.0))
     if cpu > w.get('cpu_max_pct', 25):
         return False, 'cpu busy %.1f%%' % cpu
+    if overdue and not on_due_day:
+        return True, 'catch-up（上次 %s）· cpu idle %.1f%%' % (last or '從未執行', cpu)
     return True, 'cpu idle %.1f%%' % cpu
 
 
 def run_weekly(cfg, state, disk, reason):
     scan = do_scan(cfg, verbose=True)
     do_report(cfg, scan)
+    level = decide_notify(cfg, disk)
     state['last_weekly_date'] = datetime.date.today().isoformat()
+    state['last_weekly_ts'] = time.time()
+    state['last_weekly_status'] = level      # 事後可查「那次分析做了沒、結論是什麼」
+    state['last_weekly_reason'] = reason
     state['last_scan_ts'] = time.time()
     write_state(cfg, state)
-    log(cfg, 'weekly analysis done: files=%d elapsed=%ss pct=%.2f reason=%s' %
-        (scan['files_seen'], scan['elapsed_sec'], disk['free_pct'], reason))
-    level = decide_notify(cfg, disk)
+    log(cfg, 'weekly analysis done: files=%d elapsed=%ss pct=%.2f level=%s reason=%s' %
+        (scan['files_seen'], scan['elapsed_sec'], disk['free_pct'], level, reason))
     if level == 'alert':
         write_notice(cfg, disk, '週一分析後仍低於 2%')
         return 'alert', scan
