@@ -27,6 +27,17 @@ from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SCRIPTS = os.path.join(ROOT, 'scripts')
 sys.path.insert(0, SCRIPTS)
+
+
+def version_string():
+    """版本號以 cdisk-guard/VERSION 為單一來源；讀不到回 0.0.0，不阻斷任何功能。"""
+    try:
+        with open(os.path.join(ROOT, 'VERSION'), encoding='utf-8') as f:
+            return f.read().strip() or '0.0.0'
+    except OSError:
+        return '0.0.0'
+
+
 from win_dialog import show_alert  # noqa: E402
 
 MB = 1024.0 * 1024.0
@@ -1314,6 +1325,8 @@ def cmd_selftest(cfg, with_ui=False):
 def main(argv=None):
     ap = argparse.ArgumentParser(prog='cdiskctl.py',
                                  description='cdisk-guard · C 盤空間守護 CLI')
+    ap.add_argument('--version', action='version',
+                    version='DiskGuard %s' % version_string())
     ap.add_argument('--config', default=DEFAULT_CONFIG)
     ap.add_argument('--dry-run', action='store_true')
     ap.add_argument('--budget', type=int, default=None, help='scan 時間上限（秒）')

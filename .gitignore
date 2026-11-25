@@ -20,5 +20,8 @@ deskpet-*.html
 __pycache__/
 *.pyc
 
+# 打包檢查用的暫存解壓目錄
+_relcheck/
+
 # 壓縮檔
 *.zip
