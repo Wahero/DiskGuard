@@ -347,6 +347,8 @@ for _fn, _arg, _ret in [
                          wintypes.BYTE, wintypes.BYTE, wintypes.BYTE, wintypes.BYTE,
                          wintypes.BYTE, wintypes.LPCWSTR], wintypes.HFONT),
     (gdi32.TextOutW, [wintypes.HDC, ctypes.c_int, ctypes.c_int, wintypes.LPCWSTR, ctypes.c_int], wintypes.BOOL),
+    (gdi32.GetTextExtentPoint32W, [wintypes.HDC, wintypes.LPCWSTR, ctypes.c_int,
+                                   ctypes.POINTER(wintypes.SIZE)], wintypes.BOOL),
     (gdi32.RoundRect, [wintypes.HDC, ctypes.c_int, ctypes.c_int, ctypes.c_int,
                        ctypes.c_int, ctypes.c_int, ctypes.c_int], wintypes.BOOL),
     (gdi32.Ellipse, [wintypes.HDC, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int], wintypes.BOOL),
@@ -521,6 +523,22 @@ def _text_icon(hdc, x, y, s, size, color, name='Segoe UI Symbol'):
     try:
         gdi32.SetTextColor(hdc, color)
         gdi32.TextOutW(hdc, x, y, s, len(s))
+    finally:
+        gdi32.SelectObject(hdc, old)
+        gdi32.DeleteObject(f)
+
+
+def _text_w(hdc, s, size=14, bold=False):
+    """量測字串寬度（像素）；選單要把「▸」與右側數值貼齊右邊，必須先量。"""
+    if not s:
+        return 0
+    f, old = _font(hdc, size, bold)
+    try:
+        sz = wintypes.SIZE()
+        gdi32.GetTextExtentPoint32W(hdc, s, len(s), ctypes.byref(sz))
+        return int(sz.cx)
+    except Exception:
+        return len(s) * size // 2
     finally:
         gdi32.SelectObject(hdc, old)
         gdi32.DeleteObject(f)
@@ -737,6 +755,8 @@ class PetApp:
         self.usage_until = 0.0
         # 自繪右鍵選單（本機 WM_MEASUREITEM／WM_DRAWITEM 未送達，不能用系統 owner-draw）
         self.menu_win = None
+        self.menu_panels = []         # 多層選單：每層一個 Layered 面板（第 0 層是頂層）
+        self.menu_press_panel = -1    # 左鍵按下落在哪一層（-1＝沒落在任何面板）
         self.menu_rows = []
         self.menu_hover = -1
         self.menu_press = -1          # 左鍵按下落在哪一列（按放同一列才執行）
@@ -854,8 +874,8 @@ class PetApp:
     # ---------- 視窗程序 ----------
     def wndproc(self, hwnd, msg, wparam, lparam):
         try:
-            if self.menu_win and hwnd == self.menu_win.hwnd:
-                self._menu_wndproc(msg, wparam)
+            if self._menu_panel_by_hwnd(hwnd) >= 0:
+                self._menu_wndproc(hwnd, msg, wparam, lparam)
                 return 0
             if self.trace and msg in (0x0200, 0x0201, 0x0202, 0x0204, 0x0205,
                                       WM_MOUSELEAVE):
@@ -991,7 +1011,11 @@ class PetApp:
                 self.open_menu(pt.x, pt.y)
                 return 0
             if msg in (0x0010, 0x0002):  # WM_CLOSE / WM_DESTROY
-                user32.PostQuitMessage(0)
+                # **只認主視窗**：面板／氣泡／選單都是同一個視窗類別、共用這個
+                # wndproc，把它們的 WM_DESTROY 也當成「結束程式」，就會出現
+                # 「關掉用量面板，桌寵跟著消失」。2026-11-26 重寫兩層選單時撞到。
+                if hwnd == self.hwnd or (self.pet_win and hwnd == self.pet_win.hwnd):
+                    user32.PostQuitMessage(0)
                 return 0
             if msg == 0x0111:         # WM_COMMAND（選單）
                 self.sfx('menu_hit')  # 托盤原生選單走這條（自繪選單不播開場音，選中才播）
@@ -1101,28 +1125,37 @@ class PetApp:
         self.sfx('panel_close')
         event(self.cfg, 'panel_close')
 
-    # ---------- 右鍵選單（F11：三類危險動作不存在） ----------
+    # ---------- 右鍵選單（兩層：常用動作 ＋ 系統設置） ----------
+    # 2026-11-26 精簡原則：頂層只留「按了會改變結果」的動作，設定類全部收進
+    # 系統設置的第二層，避免每次右鍵都要掃 11 行。
+    #   移除「離線唯讀報告」——與「開啟分析網頁」重複，改為開頁失敗時自動降級
+    #   移除「查看通知」——notice.md 幾乎永遠是空的，警示已由氣泡＋托盤提示
     MENU = [
         (1001, '開啟分析網頁（本機服務）'),
         (1002, '立即背景分析一次'),
-        (1009, '分析後自動開頁 開／關'),
-        (1010, '離線唯讀報告（API=false）'),
         (0, None),
         (1003, '查看日誌'),
-        (1004, '查看通知'),
         (0, None),
-        (1005, '暫停守護 1 小時'),
-        (1006, '隱藏／顯示桌寵'),
-        (1007, '音效 開／關'),
-        (1011, '字體大小：大'),
+        (2000, '系統設置'),
         (0, None),
         (1008, '結束程式'),
     ]
+    # 子選單：父 cid → [(cid, label), ...]；元素寫法與 MENU 相同（0=分隔線）
+    SUBMENU = {
+        2000: [(2001, '字體大小'),
+               (1007, '音效'),
+               (1009, '分析後自動開頁'),
+               (1006, '隱藏桌寵'),
+               (1005, '暫停守護 1 小時')],
+        2001: [(3001, '標準'),
+               (3002, '大'),
+               (3003, '特大')],
+    }
+    FONT_CHOICE = {3001: 1.0, 3002: 1.15, 3003: 1.3}
     # 圖示字形（Segoe UI Symbol，與參考範例的「圖示＋文字」排列一致）
     MENU_ICON = {
-        1001: '◉', 1002: '⟳', 1009: '◐', 1010: '▤',
-        1003: '☰', 1004: '♧', 1005: '⏸', 1006: '◉',
-        1007: '♪', 1011: 'A', 1008: '⏻',
+        1001: '◉', 1002: '⟳', 1003: '☰', 2000: '⚙', 1008: '⏻',
+        2001: 'A', 1007: '♪', 1009: '◐', 1006: '◑', 1005: '⏸',
     }
     MENU_RADIUS = 10
     MENU_ICON_FONT = 'Segoe UI Symbol'
@@ -1135,38 +1168,61 @@ class PetApp:
         """依字級比例＋DPI 換算像素（座標與字級共用，確保版面等比且銳利）。"""
         return max(9, int(round(n * self.font_scale * self.dpi)))
 
-    def menu_items(self):
-        """選單項目（字體大小一項顯示目前級別）。"""
-        name = FONT_SCALE_NAMES.get(round(self.font_scale, 2), '大')
-        out = []
-        for cid, label in self.MENU:
-            if cid == 1011:
-                label = '字體大小：%s' % name
-            out.append((cid, label))
-        return out
+    def _menu_label(self, cid, base):
+        """動態標籤：只改「動作型」項目的文字（開／關型改用 ✓ 表達）。"""
+        if cid == 1006:
+            return '顯示桌寵' if self.p['idle_hidden'] else '隱藏桌寵'
+        if cid == 1005:
+            return '恢復守護' if time.time() < self.paused_until else '暫停守護 1 小時'
+        return base
 
-    def _menu_layout(self):
+    def _menu_checked(self, cid):
+        """✓ 一律代表「已開啟／已選用」，不再用 ✓ 表示「關閉」。"""
+        if cid == 1007:
+            return bool(self.sound)
+        if cid == 1009:
+            return bool(self.auto_open)
+        v = self.FONT_CHOICE.get(cid)
+        return v is not None and abs(self.font_scale - v) < 1e-6
+
+    def _menu_value(self, cid):
+        """子選單父列右側顯示的目前值（字體大小 → 標準／大／特大）。"""
+        if cid == 2001:
+            return FONT_SCALE_NAMES.get(round(self.font_scale, 2), '大')
+        return ''
+
+    def _menu_source(self, cid=None):
+        return self.MENU if cid is None else (self.SUBMENU.get(cid) or [])
+
+    def menu_items(self, cid=None):
+        """該層的項目（含動態標籤）；cid=None 即頂層。"""
+        return [(c, self._menu_label(c, l)) for c, l in self._menu_source(cid)]
+
+    def _menu_layout_for(self, cid=None):
         """回傳 (rows, height)；row=(cid, label, checked, grayed, y0, y1)。"""
         rows, y = [], self._fs(8)
         row_h, sep_h = self._fs(40), self._fs(12)
-        for cid, label in self.menu_items():
-            if cid == 0:
+        for c, label in self.menu_items(cid):
+            if c == 0:
                 rows.append((0, None, False, False, y, y + sep_h))
                 y += sep_h
                 continue
-            checked = ((cid == 1007 and not self.sound) or
-                       (cid == 1006 and bool(self.p['idle_hidden'])) or
-                       (cid == 1005 and time.time() < self.paused_until) or
-                       (cid == 1009 and self.auto_open))
-            grayed = (cid == 1002 and self.scan_busy.locked())
-            rows.append((cid, label, checked, grayed, y, y + row_h))
+            checked = self._menu_checked(c)
+            grayed = (c == 1002 and self.scan_busy.locked())
+            rows.append((c, label, checked, grayed, y, y + row_h))
             y += row_h
         return rows, y + self._fs(8)
 
-    def _menu_paint(self):
-        win = self.menu_win
-        if not win:
+    def _menu_layout(self):
+        """頂層選單版面（探針與自測沿用這個簽名）。"""
+        return self._menu_layout_for(None)
+
+    # ---------- 選單繪製（多層：每個面板一個 Layered 視窗） ----------
+    def _menu_paint_panel(self, idx):
+        if not (0 <= idx < len(self.menu_panels)):
             return
+        panel = self.menu_panels[idx]
+        win, rows, hover = panel['win'], panel['rows'], panel['hover']
 
         def draw(hdc):
             W, H = win.w, win.h
@@ -1180,13 +1236,13 @@ class PetApp:
             _fill_dib(win, 0, 0, 1, H, BGR(84, 88, 94))
             _fill_dib(win, 0, H - 1, W, H, BGR(30, 32, 36))
             _fill_dib(win, W - 1, 0, W, H, BGR(30, 32, 36))
-            for i, (cid, label, checked, grayed, y0, y1) in enumerate(self.menu_rows):
+            for i, (cid, label, checked, grayed, y0, y1) in enumerate(rows):
                 if cid == 0:
                     mid = y0 + (y1 - y0) // 2
                     _fill_dib(win, self._fs(18), mid, W - self._fs(18), mid + 1,
                               BGR(74, 77, 82))
                     continue
-                sel = (i == self.menu_hover and not grayed)
+                sel = (i == hover and not grayed)
                 if sel:
                     _fill_dib(win, 2, y0, W - 2, y1, BGR(66, 70, 78))
                 if cid == 1008:                       # 結束程式：紅色（與參考一致）
@@ -1202,15 +1258,68 @@ class PetApp:
                                BGR(126, 224, 168) if checked else color)
                 _text(hdc, self._fs(54), y0 + self._fs(7), label or '', self._fs(20),
                       color, sel)
+                # 右側：目前值（若有）＋ 子選單箭頭；兩者可並存
+                val = self._menu_value(cid)
+                right = W - self._fs(20)
+                if cid in self.SUBMENU:
+                    arrow = '▸'
+                    aw = _text_w(hdc, arrow, self._fs(16))
+                    if val:
+                        vw = _text_w(hdc, val, self._fs(17))
+                        _text(hdc, right - aw - self._fs(8) - vw, y0 + self._fs(9), val,
+                              self._fs(17),
+                              BGR(150, 200, 245) if sel else BGR(146, 152, 162))
+                    _text_icon(hdc, right - aw, y0 + self._fs(8), arrow, self._fs(16),
+                               BGR(170, 176, 186) if not sel else BGR(255, 255, 255))
+                elif val:
+                    vw = _text_w(hdc, val, self._fs(17))
+                    _text(hdc, right - vw, y0 + self._fs(9), val, self._fs(17),
+                          BGR(150, 200, 245) if sel else BGR(146, 152, 162))
         win.paint(draw)
 
-    def _menu_hit(self, mx, my):
-        if not self.menu_win or not (0 <= mx < self.menu_win.w):
+    def _menu_paint(self):
+        """只重畫頂層。
+
+        舊的離線渲染探針（crisp_probe／ui_render_probe／menu_render_*）會塞一個
+        假 Layered 到 menu_win 再呼叫這裡，沒有 menu_panels；為了不讓那些探針
+        失效，這裡臨時把假視窗包成一個面板再畫。正式路徑永遠走 panels。
+        """
+        if not self.menu_panels:
+            if not (self.menu_win and self.menu_rows):
+                return
+            self.menu_panels = [{'win': self.menu_win, 'rows': self.menu_rows,
+                                 'x': self.menu_x, 'y': self.menu_y, 'cid': None,
+                                 'hover': self.menu_hover, 'press': -1, 'dir': 'right'}]
+            try:
+                self._menu_paint_panel(0)
+            finally:
+                self.menu_panels = []
+            return
+        self._menu_paint_panel(0)
+
+    def _menu_row_at(self, panel, x, y):
+        """面板客戶座標 → 列索引（只有可點擊的列才算）。"""
+        if not (0 <= x < panel['win'].w and 0 <= y < panel['win'].h):
             return -1
-        for i, (cid, label, checked, grayed, y0, y1) in enumerate(self.menu_rows):
-            if y0 <= my < y1:
+        for i, (cid, _l, _c, grayed, y0, y1) in enumerate(panel['rows']):
+            if y0 <= y < y1:
                 return i if (cid and not grayed) else -1
         return -1
+
+    def _menu_panel_at(self, sx, sy):
+        """螢幕座標 → (面板索引, 客戶x, 客戶y)；由最上層往下找。"""
+        for i in range(len(self.menu_panels) - 1, -1, -1):
+            p = self.menu_panels[i]
+            if (p['x'] <= sx < p['x'] + p['win'].w and
+                    p['y'] <= sy < p['y'] + p['win'].h):
+                return i, sx - p['x'], sy - p['y']
+        return -1, 0, 0
+
+    def _menu_hit(self, mx, my):
+        """頂層面板的命中測試（探針沿用）。"""
+        if not self.menu_panels:
+            return -1
+        return self._menu_row_at(self.menu_panels[0], mx, my)
 
     def _menu_cursor_row(self):
         pt = POINT()
@@ -1250,34 +1359,157 @@ class PetApp:
             if ncode >= HC_ACTION and wparam in (WM_LBUTTONDOWN, WM_RBUTTONDOWN):
                 ms = ctypes.cast(lparam, ctypes.POINTER(MSLLHOOKSTRUCT)).contents
                 px, py = ms.pt.x, ms.pt.y
-                inside = (state['x'] <= px <= state['x'] + state['w'] and
-                          state['y'] <= py <= state['y'] + state['h'])
+                inside = False
+                for p in self.menu_panels:
+                    rx, ry, rw, rh = p['phys']
+                    if rx <= px <= rx + rw and ry <= py <= ry + rh:
+                        inside = True
+                        break
                 if self.menu_trace:
-                    C.log(self.cfg, 'menu hook 0x%04x phys=(%d,%d) rect=(%d,%d,%d,%d) '
-                                    'inside=%s' % (wparam, px, py, state['x'], state['y'],
-                                                   state['w'], state['h'], inside))
+                    rects = [p['phys'] for p in self.menu_panels]
+                    C.log(self.cfg, 'menu hook 0x%04x phys=(%d,%d) rects=%s inside=%s' %
+                          (wparam, px, py, rects, inside))
                 if not inside:
                     user32.PostMessageW(state['hwnd'], WM_MENU_DISMISS, 0, 0)
         except Exception:
             pass
         return user32.CallNextHookEx(None, ncode, wparam, lparam)
 
-    def _menu_wndproc(self, msg, wparam):
+    def _menu_panel_by_hwnd(self, hwnd):
+        for i, p in enumerate(self.menu_panels):
+            if int(p['win'].hwnd) == int(hwnd):
+                return i
+        return -1
+
+    def _menu_msg_point(self, hwnd, lparam):
+        """滑鼠訊息座標 → 螢幕座標。
+
+        優先用訊息自己的 lParam（客戶座標）換算：那是系統在**派送當下**算好的，
+        不受處理期間游標移動影響，也不受 DPI 虛擬化影響。2026-11-26 的
+        「字體選了沒反應」就是靠改用 lParam 定位才排除 GetCursorPos 的漂移。
+        """
+        lx = ctypes.c_short(lparam & 0xFFFF).value
+        ly = ctypes.c_short((lparam >> 16) & 0xFFFF).value
+        idx = self._menu_panel_by_hwnd(hwnd)
+        if idx >= 0:
+            p = self.menu_panels[idx]
+            return p['x'] + lx, p['y'] + ly
+        pt = POINT()
+        user32.GetCursorPos(ctypes.byref(pt))
+        return pt.x, pt.y
+
+    def _menu_hit_at(self, sx, sy):
+        """螢幕座標 → (面板索引, 列索引)；-1 表示沒有命中可點擊的列。"""
+        idx, lx, ly = self._menu_panel_at(sx, sy)
+        if idx < 0:
+            return -1, -1
+        return idx, self._menu_row_at(self.menu_panels[idx], lx, ly)
+
+    def _menu_add_panel(self, cid, rows, width, height, x, y, direction='right'):
+        win = Layered(width, height, (x, y), topmost=True, opaque=True)
+        # 圓角裁切：讓分層視窗四角透明，避開「與其他程式一樣方」的邊框
+        rgn = gdi32.CreateRoundRectRgn(0, 0, width + 1, height + 1,
+                                       self._px(self.MENU_RADIUS),
+                                       self._px(self.MENU_RADIUS))
+        if rgn:
+            user32.SetWindowRgn(win.hwnd, rgn, True)   # 所有權移交給視窗，不 DeleteObject
+        p = {'win': win, 'rows': rows, 'x': int(x), 'y': int(y), 'cid': cid,
+             'hover': -1, 'press': -1, 'dir': direction,
+             'phys': self._physical_rect(win.hwnd, (x, y, width, height))}
+        self.menu_panels.append(p)
+        self._menu_paint_panel(len(self.menu_panels) - 1)
+        win.show(True)
+        return p
+
+    def _menu_close_from(self, i):
+        """關掉第 i 層與它之後的所有面板。"""
+        while len(self.menu_panels) > i:
+            p = self.menu_panels.pop()
+            try:
+                p['win'].close()
+            except Exception:
+                pass
+
+    def _menu_open_child(self, idx, row):
+        """在某面板的第 row 列（子選單父列）旁展開下一層。
+
+        方向規則（2026-11-26）：沿用父層的方向（右→右、左→左），
+        右邊放不下才翻到左邊，並把方向傳給更深的層——否則會出現
+        「第二層在左、第三層又翻回右邊，正好蓋住頂層選單」的鬼畫面。
+        """
+        parent = self.menu_panels[idx]
+        cid = parent['rows'][row][0]
+        y0 = parent['rows'][row][4]
+        rows, height = self._menu_layout_for(cid)
+        width = self._fs(340)
+        sw, sh = user32.GetSystemMetrics(0), user32.GetSystemMetrics(1)
+        gap = self._px(2)
+        prefer = parent.get('dir', 'right')
+        side = [(prefer, parent['x'] + parent['win'].w + gap),
+                ('left' if prefer == 'right' else 'right',
+                 parent['x'] - width - gap)]
+        x, chosen = None, prefer
+        for name, cx in side:
+            if cx < 4 or cx + width > sw - 4:
+                continue
+            if any(not (cx + width <= p['x'] or cx >= p['x'] + p['win'].w)
+                   for p in self.menu_panels):
+                continue                      # 會蓋住既有面板 → 換邊
+            x, chosen = cx, name
+            break
+        if x is None:
+            x = parent['x'] + parent['win'].w + gap if prefer == 'right' \
+                else parent['x'] - width - gap
+            x = max(4, min(x, sw - width - 4))
+        y = parent['y'] + y0 - self._fs(8)           # 與父列上緣對齊
+        y = max(4, min(y, sh - height - 4))
+        self._menu_add_panel(cid, rows, width, height, x, y, chosen)
+
+    def _menu_sync_child(self, idx):
+        """讓第 idx 層之後的面板跟著它的高亮列：父列有子選單就開，否則收。"""
+        if not (0 <= idx < len(self.menu_panels)):
+            return
+        p = self.menu_panels[idx]
+        row = p['hover'] if 0 <= p['hover'] < len(p['rows']) else None
+        cid = p['rows'][row][0] if row is not None else None
+        want = cid if cid in self.SUBMENU else None
+        if want is not None and len(self.menu_panels) > idx + 1:
+            if self.menu_panels[idx + 1]['cid'] == want:
+                self._menu_close_from(idx + 2)       # 同一層已開 → 只收更深層
+                return
+        self._menu_close_from(idx + 1)
+        if want is not None:
+            self._menu_open_child(idx, row)
+
+    def _menu_pointer(self, sx, sy):
+        """更新游標所在面板的高亮，並維護子選單開合。"""
+        idx, row = self._menu_hit_at(sx, sy)
+        if idx < 0:
+            return
+        p = self.menu_panels[idx]
+        if p['hover'] != row:
+            p['hover'] = row
+            self._menu_paint_panel(idx)
+        self._menu_sync_child(idx)
+
+    def _menu_wndproc(self, hwnd, msg, wparam, lparam):
         """自繪選單視窗的滑鼠／鍵盤訊息；本機系統 owner-draw 訊息未送達。
 
         選取規則（Boss 2026-11-25 要求）：**只有左鍵按下＋在同一列放開才算選取**。
         右鍵完全不會執行任何功能——0x0204 是右鍵「按下」，選單正是在那時打開的，
         隨後的 0x0205 放手若被當成選取，就會「一放手就執行游標那一列」。
+
+        多層（2026-11-26 加）：子選單是另一個 Layered 視窗，但滑鼠捕獲在頂層，
+        所以所有滑鼠訊息都送到頂層；座標換成螢幕座標後再判斷落在哪一層哪一列。
         """
         if getattr(self, 'menu_trace', False):  # 診斷用：data\menu-trace.on 存在才記錄
             try:
-                pt = POINT()
-                user32.GetCursorPos(ctypes.byref(pt))
-                C.log(self.cfg, 'menu trace msg=0x%04x cur=(%d,%d) base=(%d,%d) '
-                                'row=%d press=%d hover=%d done=%s' %
-                      (msg, pt.x, pt.y, self.menu_x, self.menu_y,
-                       self._menu_cursor_row(), self.menu_press, self.menu_hover,
-                       self.menu_done))
+                sx, sy = self._menu_msg_point(hwnd, lparam)
+                C.log(self.cfg, 'menu trace msg=0x%04x pt=(%d,%d) hwnd=%s panels=%d '
+                                'hit=%s press=(%s,%s) done=%s' %
+                      (msg, sx, sy, hwnd, len(self.menu_panels),
+                       self._menu_hit_at(sx, sy), self.menu_press_panel,
+                       self.menu_press, self.menu_done))
             except Exception:
                 pass
         if msg == WM_MENU_DISMISS:              # 全域鉤子：點選單外
@@ -1291,44 +1523,64 @@ class PetApp:
         if msg in (0x0204, 0x0205) and self._now() - self.menu_open_ts < 0.15:
             return
         if msg == 0x0200:                       # WM_MOUSEMOVE
-            idx = self._menu_cursor_row()
-            if idx != self.menu_hover:
-                self.menu_hover = idx
-                self._menu_paint()
+            self._menu_pointer(*self._menu_msg_point(hwnd, lparam))
         elif msg == 0x0201:                     # 左鍵按下：只記錄落點，不執行
-            self.menu_press = self._menu_cursor_row()
-            if self.menu_press != self.menu_hover:
-                self.menu_hover = self.menu_press
-                self._menu_paint()
+            sx, sy = self._menu_msg_point(hwnd, lparam)
+            self._menu_pointer(sx, sy)
+            self.menu_press_panel, self.menu_press = self._menu_hit_at(sx, sy)
+            if self.menu_press_panel >= 0:
+                p = self.menu_panels[self.menu_press_panel]
+                p['press'] = self.menu_press
+                if p['rows'][self.menu_press][0] in self.SUBMENU:
+                    self._menu_sync_child(self.menu_press_panel)   # 父列按下即展開
         elif msg == 0x0202:                     # 左鍵放開：按、放同一列才執行
-            idx = self._menu_cursor_row()
-            if idx >= 0 and idx == self.menu_press:
-                row = self.menu_rows[idx]
-                if row[0] and not row[3]:
-                    self.menu_result = row[0]
-            self.menu_done = True
+            sx, sy = self._menu_msg_point(hwnd, lparam)
+            idx, row = self._menu_hit_at(sx, sy)
+            hit = (idx >= 0 and row >= 0 and
+                   idx == self.menu_press_panel and row == self.menu_press)
+            for p in self.menu_panels:
+                p['press'] = -1
+            self.menu_press, self.menu_press_panel = -1, -1
+            if hit:
+                cid = self.menu_panels[idx]['rows'][row][0]
+                if cid in self.SUBMENU:         # 父列：不執行，維持展開
+                    self.menu_panels[idx]['hover'] = row
+                    self._menu_paint_panel(idx)
+                    self._menu_sync_child(idx)
+                else:
+                    self.menu_result = cid
+                    self.menu_done = True
+            else:
+                # 按放不同列／落在面板外 → 直接收起，且**不留任何結果**。
+                # 這條路徑過去完全靜默，Boss 只看到「選單關了、什麼都沒發生」；
+                # 現在寫一行日誌，下次回報時有證據可查（見 HANDOFF 陷阱 13）。
+                try:
+                    C.log(self.cfg, 'menu click ignored: press=(%s,%s) release=(%s,%s)' %
+                          (self.menu_press_panel, self.menu_press, idx, row))
+                except Exception:
+                    pass
+                self.menu_done = True
         elif msg == 0x0204:                     # 右鍵再按一下：收起選單（不執行）
             self.menu_done = True
         elif msg == 0x0205:                     # 右鍵放開：完全忽略
             pass
-        elif msg == 0x0100:                     # WM_KEYDOWN
+        elif msg == 0x0100:                     # WM_KEYDOWN（選單無焦點時不會到這）
             key = wparam & 0xFFFF
             if key == VK_ESCAPE:
-                self.menu_done = True
-            elif key in (VK_UP, VK_DOWN) and self.menu_rows:
-                idx = self.menu_hover
-                step = 1 if key == VK_DOWN else -1
-                for _ in range(len(self.menu_rows)):
-                    idx = (idx + step) % len(self.menu_rows)
-                    if self.menu_rows[idx][0] and not self.menu_rows[idx][3]:
-                        break
-                self.menu_hover = idx
-                self._menu_paint()
-            elif key == VK_RETURN and 0 <= self.menu_hover < len(self.menu_rows):
-                row = self.menu_rows[self.menu_hover]
-                if row[0] and not row[3]:
-                    self.menu_result = row[0]
+                if len(self.menu_panels) > 1:
+                    self._menu_close_from(1)
+                else:
                     self.menu_done = True
+            elif key == VK_RETURN and self.menu_panels:
+                p = self.menu_panels[-1]
+                row = p['hover']
+                if 0 <= row < len(p['rows']) and p['rows'][row][0]:
+                    cid = p['rows'][row][0]
+                    if cid in self.SUBMENU:
+                        self._menu_sync_child(len(self.menu_panels) - 1)
+                    else:
+                        self.menu_result = cid
+                        self.menu_done = True
 
     def open_menu(self, x, y):
         """自繪分層選單：完全不依賴 TrackPopupMenu 的 owner-draw 回呼。
@@ -1349,29 +1601,24 @@ class PetApp:
         sh = user32.GetSystemMetrics(1)
         x = max(0, min(int(x), sw - width - 4))
         y = max(0, min(int(y), sh - height - 4))
-        win = Layered(width, height, (x, y), topmost=True, opaque=True)
-        # 圓角裁切：讓分層視窗四角透明，避開「與其他程式一樣方」的邊框
-        rgn = gdi32.CreateRoundRectRgn(0, 0, width + 1, height + 1,
-                                       self._px(self.MENU_RADIUS),
-                                       self._px(self.MENU_RADIUS))
-        if rgn:
-            user32.SetWindowRgn(win.hwnd, rgn, True)   # 所有權移交給視窗，不 DeleteObject
-        self.menu_win = win
-        self.menu_rows = rows
-        self.menu_hover = -1
-        self.menu_press = -1
+        self._menu_close_from(0)
         self.menu_open_ts = self._now()
         self.menu_result = None
         self.menu_done = False
+        self.menu_press = -1
+        self.menu_press_panel = -1
+        p = self._menu_add_panel(None, rows, width, height, x, y)
+        # 舊探針相容用的鏡像欄位（頂層）
+        self.menu_win = p['win']
+        self.menu_rows = rows
+        self.menu_hover = -1
         self.menu_x, self.menu_y = x, y
-        self._menu_paint()
-        win.show(True)
-        user32.SetCapture(win.hwnd)   # 確保選單內點擊送到本視窗
+        user32.SetCapture(p['win'].hwnd)   # 確保選單內點擊送到本視窗
 
         # 全域低階滑鼠鉤子：點選單外立即關閉（SetCapture 只在同一執行緒有效）
         # 鉤子送來的是「物理像素」，所以這裡存物理邊界，兩邊同一座標系才比得對
-        px, py, pw, ph = self._physical_rect(win.hwnd, (x, y, width, height))
-        self.menu_hook_state = {'hwnd': win.hwnd, 'x': px, 'y': py, 'w': pw, 'h': ph}
+        # 多層時每一層都要算進去，否則點子選單會被判成「在外面」而整個關掉。
+        self.menu_hook_state = {'hwnd': p['win'].hwnd}
 
         @HOOKPROC
         def _mouse_hook(ncode, wparam, lparam):
@@ -1381,7 +1628,7 @@ class PetApp:
                                         kernel32.GetModuleHandleW(None), 0)
         msg = wintypes.MSG()
         try:
-            while self.menu_win and not self.menu_done:
+            while self.menu_panels and not self.menu_done:
                 if user32.GetMessageW(ctypes.byref(msg), 0, 0, 0) <= 0:
                     break
                 if msg.message == WM_QUIT:
@@ -1396,12 +1643,11 @@ class PetApp:
                 # 只放掉「自己」的捕獲：無條件 ReleaseCapture() 會把桌寵正在
                 # 進行的拖曳捕獲一起搶走，接著放開事件就送不到桌寵 →
                 # self.drag 卡住、桌寵黏著滑鼠（2026-11-25 6.22 追蹤確認）。
-                if user32.GetCapture() == win.hwnd:
+                if user32.GetCapture() == p['win'].hwnd:
                     user32.ReleaseCapture()
             except Exception:
                 pass
-            if self.menu_win:
-                self.menu_win.close()
+            self._menu_close_from(0)
             cmd = self.menu_result
             self.menu_win = None
             self.menu_rows = []
@@ -1431,25 +1677,19 @@ class PetApp:
             C.log(self.cfg, 'pet menu: auto_open_page_after_scan=%s' % self.auto_open)
             event(self.cfg, 'menu_auto_open', enabled=self.auto_open)
         elif cid == 1010:
-            p = os.path.join(C.out_dir(self.cfg), 'C盘清理清单.html')
-            if os.path.exists(p):
-                shell32.ShellExecuteW(0, None, p, None, None, 1)
-                self.sfx('page_open')
-                C.log(self.cfg, 'pet menu: open offline report page (API=false)')
-            else:
-                C.log(self.cfg, 'pet menu: report page missing')
-            event(self.cfg, 'menu_open_offline_page')
+            # 已從選單移除（與「開啟分析網頁」重複）；保留指令以相容舊呼叫，
+            # 現在這條路徑只作為 serve 起不來時的自動降級（見 _serve_open）。
+            self._open_offline_report()
         elif cid == 1003:
             p = os.path.join(C.out_dir(self.cfg), self.cfg['paths']['log_filename'])
             if os.path.exists(p):
                 shell32.ShellExecuteW(0, 'open', 'notepad.exe', p, None, 1)
             event(self.cfg, 'menu_view_log')
         elif cid == 1004:
+            # 已從選單移除（notice.md 幾乎永遠是空的，警示走氣泡＋托盤）。
             p = os.path.join(C.out_dir(self.cfg), 'notice.md')
             if os.path.exists(p):
                 shell32.ShellExecuteW(0, 'open', 'notepad.exe', p, None, 1)
-            else:
-                user32.MessageBoxW(self.hwnd, '尚無通知（空間高於門檻）。', 'DiskGuard', 0x40)
             event(self.cfg, 'menu_view_notice')
         elif cid == 1005:
             if time.time() < self.paused_until:
@@ -1484,10 +1724,9 @@ class PetApp:
                 pet_sfx.stop()
             C.log(self.cfg, 'pet menu: sounds_enabled=%s' % self.sound)
             event(self.cfg, 'menu_sound', enabled=self.sound)
-        elif cid == 1011:
-            cur = min(range(len(FONT_SCALES)),
-                      key=lambda i: abs(FONT_SCALES[i] - self.font_scale))
-            self.font_scale = FONT_SCALES[(cur + 1) % len(FONT_SCALES)]
+        elif cid in self.FONT_CHOICE:
+            # 字體大小改為子選單直接點選（標準／大／特大），不再循環切換
+            self.font_scale = self.FONT_CHOICE[cid]
             self.pet_state['font_scale'] = self.font_scale
             self.save_state()
             if self.usage_win and user32.IsWindowVisible(self.usage_win.hwnd):
@@ -1495,6 +1734,8 @@ class PetApp:
                 self.show_usage(self._tray_left_anchor())
             C.log(self.cfg, 'pet menu: font_scale=%.2f' % self.font_scale)
             event(self.cfg, 'menu_font_scale', scale=self.font_scale)
+        elif cid == 2001:
+            pass          # 子選單父列：只負責展開，不做事
         elif cid == 1008:
             r = user32.MessageBoxW(self.hwnd, '確定結束 DiskGuard 桌寵？（守護亦會停止）',
                                    'DiskGuard', 0x0004 | 0x0020)  # MB_YESNO|MB_ICONQUESTION
@@ -1504,6 +1745,18 @@ class PetApp:
                 event(self.cfg, 'menu_exit')
 
     # ---------- Phase 2 請求（UI → worker，只用 Event，不阻塞訊息迴圈） ----------
+    def _open_offline_report(self):
+        """離線唯讀清單頁（API=false）。原為獨立選單項，現併入「開啟分析網頁」的降級路徑。"""
+        p = os.path.join(C.out_dir(self.cfg), 'C盘清理清单.html')
+        if os.path.exists(p):
+            shell32.ShellExecuteW(0, None, p, None, None, 1)
+            self.sfx('page_open')
+            C.log(self.cfg, 'pet menu: open offline report page (API=false)')
+            event(self.cfg, 'menu_open_offline_page')
+            return True
+        C.log(self.cfg, 'pet menu: offline report missing')
+        return False
+
     def request_scan(self, reason='manual'):
         self.scan_reason = reason
         self.scan_req.set()
@@ -2053,6 +2306,12 @@ class PetApp:
         except Exception as ex:
             C.log(self.cfg, 'pet serve failed reason=%s: %s' % (reason, ex))
             event(self.cfg, 'serve_failed', reason=reason, ok=False)
+            # 開不了本機服務就退回離線唯讀清單頁（原本是選單裡獨立一項，低價值已合併）
+            try:
+                if self._open_offline_report():
+                    C.log(self.cfg, 'pet serve fallback -> offline report')
+            except Exception:
+                pass
         finally:
             self.serve_busy.release()
 
@@ -2191,6 +2450,7 @@ class PetApp:
                     shell32.Shell_NotifyIconW(NIM_DELETE, ctypes.byref(self.nid))
             except Exception:
                 pass
+            self._menu_close_from(0)      # 多層選單：每一層都是獨立視窗
             for w in (self.bubble_win, self.menu_win, self.usage_win, self.pet_win):
                 if w:
                     w.close()
@@ -2298,10 +2558,22 @@ def cmd_selftest(cfg):
                '%d/%d wav' % (sum(os.path.exists(x) for x in sf), len(sf))))
     icos = [pet_icon.load_handle(False), pet_icon.load_handle(True)]
     ok.append(('tray icons', all(icos), '%d/2 ico' % sum(bool(x) for x in icos)))
+    # 危險動作可能藏在第二層，所以要連子選單的標籤一起檢查
     labels = ' '.join(x[1] or '' for x in PetApp.MENU)
+    labels += ' ' + ' '.join(l or '' for v in PetApp.SUBMENU.values() for _c, l in v)
     ok.append(('F11 no dangerous menu',
                all(k not in labels for k in ('刪除', '回收站', '白名單')),
-               '%d menu entries' % len([x for x in PetApp.MENU if x[1]])))
+               '%d menu entries' % (len([x for x in PetApp.MENU if x[1]]) +
+                                    sum(len(v) for v in PetApp.SUBMENU.values()))))
+    # 子選單可達性：每個 SUBMENU 的父 cid 都要出現在上一層，否則那層永遠打不開
+    parent_cids = set(c for c, _l in PetApp.MENU)
+    for v in PetApp.SUBMENU.values():
+        parent_cids |= set(c for c, _l in v)
+    ok.append(('menu tree reachable',
+               set(PetApp.SUBMENU) <= parent_cids and
+               sorted(PetApp.FONT_CHOICE) == sorted(
+                   c for c, _l in PetApp.SUBMENU[2001]),
+               '%d levels' % (1 + len(PetApp.SUBMENU))))
     ok.append(('F9 scan API', all(hasattr(C, k) for k in
                                   ('do_scan', 'do_report', 'weekly_should_run',
                                    'run_weekly', 'decide_notify', 'write_notice')), ''))
