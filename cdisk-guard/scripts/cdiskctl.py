@@ -181,9 +181,13 @@ def out_dir(cfg):
 
 
 # ---------------------------------------------------------------- 磁碟選擇
-# 多碟設計的核心約定：cfg['drive'] 一律是「本次操作的碟」，cfg['drives'] 是全部要看的碟。
-# 既有函式（disk_info / validate_targets / build_items / do_scan）全都讀 cfg['drive']，
-# 所以只要這一個欄位正確，原本的單碟邏輯就自動對；差別只在產物檔名要按碟分開。
+# v1.0.6 起三個概念要分清楚，混在一起就會出現「只想監控 C 盤，卻被 D 盤的警示吵」：
+#   cfg['drives']  掃描／清理範圍。"auto"＝本機所有固定碟（預設）。
+#   cfg['monitor'] 只監控剩餘空間的碟。預設只有系統碟 C:。
+#   cfg['drive']   本次操作的「主碟」。既有逐碟函式（do_scan / disk_info /
+#                  validate_targets / build_items）全都讀它，所以只要這個欄位正確，
+#                  單碟邏輯自動正確；多碟只是「對每顆碟各跑一次，再合併」。
+# 報告只有一份：所有掃描範圍內的碟放進同一頁，用碟別標籤區分。
 def norm_drive(d):
     """'c' / 'C:' / 'c:\\' 一律正規化成 'C:\\'。"""
     s = str(d or '').strip().upper().replace('/', '\\').rstrip('\\')
@@ -210,9 +214,76 @@ def drive_of(path):
     return p[0].upper() if len(p) >= 2 and p[1] == ':' else ''
 
 
+_kd = ctypes.WinDLL('kernel32', use_last_error=True)
+_kd.GetDriveTypeW.argtypes = [wintypes.LPCWSTR]
+_kd.GetDriveTypeW.restype = wintypes.UINT
+_kd.GetDiskFreeSpaceExW.argtypes = [
+    wintypes.LPCWSTR, ctypes.POINTER(ctypes.c_ulonglong),
+    ctypes.POINTER(ctypes.c_ulonglong), ctypes.POINTER(ctypes.c_ulonglong)]
+_kd.GetDiskFreeSpaceExW.restype = wintypes.BOOL
+
+
+def drive_exists(drive):
+    """碟是否真的可讀。光碟機空槽、已拔掉的外接碟都會回 False。
+
+    只看「代號在不在」不夠——Windows 會為拔掉的外接碟保留代號，
+    這時 disk_info 會拋 OSError，整個掃描流程就中斷了。
+    """
+    d = norm_drive(drive)
+    if len(d) < 3:
+        return False
+    avail, total, free = (ctypes.c_ulonglong(0) for _ in range(3))
+    try:
+        ok = _kd.GetDiskFreeSpaceExW(d, ctypes.byref(avail),
+                                    ctypes.byref(total), ctypes.byref(free))
+    except Exception:
+        return False
+    return bool(ok) and total.value > 0
+
+
+def all_drives():
+    """本機可處理的磁碟：固定碟＋可移動碟，排除光碟機與網路碟。
+
+    DRIVE_REMOVABLE=2、DRIVE_FIXED=3；光碟(5)與網路(4)掃描既慢又沒意義。
+    """
+    out = []
+    for ch in 'ABCDEFGHIJKLMNOPQRSTUVWXYZ':
+        d = ch + ':\\'
+        try:
+            t = _kd.GetDriveTypeW(d)
+        except Exception:
+            t = 0
+        if t in (2, 3) and drive_exists(d):
+            out.append(d)
+    return out
+
+
 def drive_list(cfg):
-    """設定裡的碟清單（正規化、去重、保序）。只有單一 drive 也相容。"""
+    """掃描／清理範圍。
+
+    "auto"（預設）＝本機所有固定碟；給清單就照清單（保留使用者刻意的取捨）。
+    這與 monitor_drives 是兩件事：可以「掃全部、只監控 C」。
+    """
     raw = cfg.get('drives')
+    if isinstance(raw, str):
+        if raw.strip().lower() in ('auto', 'all', '*', ''):
+            return all_drives() or [system_drive()]
+        raw = [raw]
+    if not isinstance(raw, list) or not raw:
+        return all_drives() or [system_drive()]
+    out = []
+    for d in raw:
+        n = norm_drive(d)
+        if n and n not in out:
+            out.append(n)
+    return out or [system_drive()]
+
+
+def monitor_drives(cfg):
+    """只監控剩餘空間的碟（警示／托盤／用量面板）。預設系統碟一顆。"""
+    raw = (cfg.get('monitor') or {}).get('drives')
+    if isinstance(raw, str):
+        raw = [raw]
     if not isinstance(raw, list) or not raw:
         raw = [cfg.get('drive') or system_drive()]
     out = []
@@ -223,10 +294,24 @@ def drive_list(cfg):
     return out or [system_drive()]
 
 
-def normalize_config(cfg, drive=None):
-    """整理 cfg['drive']（本次操作碟）與 cfg['drives']（全部碟）。
+def scan_scope(cfg):
+    """本次執行實際要處理的碟：--drive／本次請求指定優先，否則用設定範圍。"""
+    raw = cfg.get('_scope')
+    if raw:
+        out = []
+        for d in raw:
+            n = norm_drive(d)
+            if n and n not in out:
+                out.append(n)
+        if out:
+            return out
+    return drive_list(cfg)
 
-    --drive 指定的碟若不在清單內，自動補進去——指定了就是想看它。
+
+def normalize_config(cfg, drive=None, scope=None):
+    """整理 cfg['drive']（主碟）、cfg['drives']（可處理範圍）、cfg['_scope']（本次範圍）。
+
+    --drive 指定某顆碟時，本次就只處理它——「我只是想看 D」，不該連帶重掃 C。
     """
     ds = drive_list(cfg)
     cur = norm_drive(drive) or norm_drive(cfg.get('drive')) or ds[0]
@@ -234,7 +319,51 @@ def normalize_config(cfg, drive=None):
         ds.append(cur)
     cfg['drives'] = ds
     cfg['drive'] = cur
+    if scope:
+        cfg['_scope'] = [norm_drive(x) for x in scope if norm_drive(x)]
+    elif drive:
+        cfg['_scope'] = [cur]
+    else:
+        cfg.pop('_scope', None)
     return cfg
+
+
+def cfg_on(cfg, drive):
+    """取某顆碟的設定副本：cfg['drive'] 換成它，其餘（含掃描範圍）不變。
+
+    用副本而不是改共用物件，請求之間才不會互相污染。
+    """
+    d = norm_drive(drive)
+    if not d or d == norm_drive(cfg.get('drive')):
+        return cfg
+    c = copy.deepcopy(cfg)
+    c['drive'] = d
+    return c
+
+
+def last_scope(cfg):
+    """上一次實際分析過的磁碟範圍。開網頁時要顯示「這份報告實際包含什麼」。"""
+    raw = (read_state(cfg) or {}).get('last_scope')
+    if not isinstance(raw, list) or not raw:
+        return []
+    out = []
+    for d in raw:
+        n = norm_drive(d)
+        if n and n not in out:
+            out.append(n)
+    return out
+
+
+def remember_scope(cfg, drives, stamp=None):
+    """記下這次分析了哪些碟（給網頁與下次開頁用）。"""
+    try:
+        st = read_state(cfg)
+        st['last_scope'] = [norm_drive(d) for d in drives]
+        st['last_scope_ts'] = time.time()
+        st['last_scope_at'] = stamp or now_str()
+        write_state(cfg, st)
+    except Exception:
+        pass
 
 
 def scan_path(cfg, drive=None):
@@ -242,10 +371,15 @@ def scan_path(cfg, drive=None):
 
 
 def page_path(cfg, drive=None):
-    """報告檔名支援 {drive} 佔位（例：{drive}盘清理清单.html -> C盘清理清单.html）。"""
-    fn = cfg['paths'].get('page_filename') or '{drive}盘清理清单.html'
+    """綜合報告的檔名（一份，不分碟）。
+
+    舊設定可能還是 `{drive}盘清理清单.html`：升級後直接改成綜合報告檔名，
+    否則每顆碟會各寫一份，等於回到「分開」的老行為。
+    """
+    fn = cfg['paths'].get('page_filename') or '磁碟清理清單.html'
     if '{drive}' in fn:
-        fn = fn.replace('{drive}', drive_key(drive or cfg['drive']))
+        fn = fn.replace('{drive}盘清理清单.html', '磁碟清理清單.html')
+        fn = fn.replace('{drive}', '')
     return os.path.join(out_dir(cfg), fn)
 
 
@@ -342,15 +476,49 @@ def disk_info(drive=None):
     }
 
 
-def drive_summary(cfg):
-    """每顆碟的容量摘要，給網頁碟別切換與桌寵面板共用。
+def drive_inventory(cfg, scans=None):
+    """所有可處理磁碟的清單，標出哪幾顆「這次已分析」。
+
+    網頁同時用兩份資訊：頁首只列已分析的碟（chips），「選擇磁碟」彈窗列全部
+    （含未分析的），使用者才知道自己漏了哪顆。
+    """
+    scanned = {}
+    for s in scans or []:
+        scanned[norm_drive(s.get('drive'))] = s
+    keys = list(drive_list(cfg))
+    for d in scanned:
+        if d and d not in keys:
+            keys.append(d)
+    rows = []
+    for d in keys:
+        row = {'drive': d, 'letter': drive_key(d),
+               'scanned': d in scanned}
+        try:
+            di = disk_info(d)
+            row.update({'ok': True, 'total_gb': di['total_gb'],
+                        'free_gb': di['free_gb'], 'used_gb': di['used_gb'],
+                        'free_pct': di['free_pct'], 'checked_at': di['checked_at']})
+        except OSError:
+            row.update({'ok': False, 'error': '無法讀取（碟可能已移除）'})
+        s = scanned.get(d)
+        if s:
+            row['scan'] = {'created': s.get('created'),
+                           'files_seen': s.get('files_seen', 0),
+                           'elapsed_sec': s.get('elapsed_sec', 0),
+                           'truncated': bool(s.get('truncated'))}
+        rows.append(row)
+    return rows
+
+
+def drive_summary(cfg, drives=None):
+    """每顆碟的容量摘要，給桌寵用量面板與托盤用。
 
     讀不到的碟（外接碟拔掉、光碟機空槽）不拋例外，標成 ok=False——
-    一顆碟離線不該讓整個報告渲染失敗。
+    一顆碟離線不該讓整個面板／報告渲染失敗。
     """
     cur = norm_drive(cfg.get('drive'))
     out = []
-    for d in drive_list(cfg):
+    for d in (drives or drive_list(cfg)):
         row = {'drive': d, 'letter': drive_key(d), 'current': d == cur}
         try:
             di = disk_info(d)
@@ -359,9 +527,26 @@ def drive_summary(cfg):
                         'free_pct': di['free_pct']})
         except OSError:
             row.update({'ok': False, 'error': '無法讀取（碟可能已移除）'})
-        row['report'] = os.path.basename(page_path(cfg, d))
         out.append(row)
     return out
+
+
+def worst_monitor(cfg):
+    """監控範圍內最緊張的那顆碟；讀不到就跳過（外接碟拔掉不該讓守護崩）。
+
+    回傳 (disk_info, drive)。監控範圍預設只有 C:，所以單碟使用者行為不變。
+    """
+    best = None
+    for d in monitor_drives(cfg):
+        try:
+            di = disk_info(d)
+        except OSError:
+            continue
+        if best is None or di['free_pct'] < best[0]['free_pct']:
+            best = (di, d)
+    if best:
+        return best
+    return disk_info(cfg['drive']), cfg['drive']
 
 
 def _ft(v):
@@ -653,6 +838,92 @@ def scan_is_stale(cfg, scan):
         return True
 
 
+def scan_all(cfg, drives=None, budget_sec=None, verbose=False):
+    """掃描範圍內每一顆碟，回傳 scan 清單。
+
+    一顆碟失敗（拔掉、光碟空槽、權限）不該讓整份報告生不出來，
+    所以逐碟 try，失敗就記日誌跳過——報告會少那顆碟，但不會整頁空白。
+    """
+    out = []
+    for d in (drives or scan_scope(cfg)):
+        c = cfg_on(cfg, d)
+        try:
+            out.append(do_scan(c, budget_sec=budget_sec, verbose=verbose))
+        except OSError as ex:
+            log(cfg, 'scan %s failed: %s' % (d, ex))
+            emit('scan %s failed: %s' % (d, ex))
+    if out:
+        remember_scope(cfg, [s.get('drive') for s in out])
+    return out
+
+
+def load_scans(cfg, drives=None):
+    """讀掃描快取；只回傳真的存在且屬於該碟的結果，缺的不補掃。"""
+    out = []
+    for d in (drives or scan_scope(cfg)):
+        s = load_scan(cfg_on(cfg, d))
+        if s:
+            out.append(s)
+    return out
+
+
+def merge_scans(scans):
+    """把多顆碟的 scan 併成一個「合計」摘要，給頁首 KPI 用。"""
+    scans = scans or []
+    out = {'count': len(scans), 'drives': [norm_drive(s.get('drive')) for s in scans],
+           'created': '', 'elapsed_sec': 0.0, 'files_seen': 0, 'dirs_seen': 0,
+           'truncated': False, 'total_gb': 0.0, 'free_gb': 0.0, 'used_gb': 0.0,
+           'free_pct': 0.0, 'users_found': [], 'tightest': None}
+    for s in scans:
+        out['elapsed_sec'] += float(s.get('elapsed_sec') or 0)
+        out['files_seen'] += int(s.get('files_seen') or 0)
+        out['dirs_seen'] += int(s.get('dirs_seen') or 0)
+        out['truncated'] = out['truncated'] or bool(s.get('truncated'))
+        if (s.get('created') or '') > out['created']:
+            out['created'] = s.get('created') or ''
+        for u in s.get('users_found') or []:
+            if u not in out['users_found']:
+                out['users_found'].append(u)
+    rows = [r for r in drive_summary_rows(scans)]
+    for r in rows:
+        if r.get('ok'):
+            out['total_gb'] += r['total_gb']
+            out['free_gb'] += r['free_gb']
+            out['used_gb'] += r['used_gb']
+    out['total_gb'] = round(out['total_gb'], 2)
+    out['free_gb'] = round(out['free_gb'], 2)
+    out['used_gb'] = round(out['used_gb'], 2)
+    out['free_pct'] = round(out['free_gb'] / out['total_gb'] * 100, 2) \
+        if out['total_gb'] else 0.0
+    out['elapsed_sec'] = round(out['elapsed_sec'], 1)
+    tight = [r for r in rows if r.get('ok')]
+    if tight:
+        t = min(tight, key=lambda r: r['free_pct'])
+        out['tightest'] = {'letter': t['letter'], 'free_pct': t['free_pct']}
+    return out
+
+
+def drive_summary_rows(scans):
+    """把 scan 清單轉成每碟容量列（現讀容量，不用掃描當時的快照）。"""
+    rows = []
+    for s in scans or []:
+        d = norm_drive(s.get('drive'))
+        row = {'drive': d, 'letter': drive_key(d)}
+        try:
+            di = disk_info(d)
+            row.update({'ok': True, 'total_gb': di['total_gb'],
+                        'free_gb': di['free_gb'], 'used_gb': di['used_gb'],
+                        'free_pct': di['free_pct']})
+        except OSError:
+            row.update({'ok': False, 'error': '無法讀取（碟可能已移除）'})
+        row['files_seen'] = s.get('files_seen', 0)
+        row['elapsed_sec'] = s.get('elapsed_sec', 0)
+        row['truncated'] = bool(s.get('truncated'))
+        row['created'] = s.get('created')
+        rows.append(row)
+    return rows
+
+
 # ---------------------------------------------------------------- 項目與分級
 def build_items(cfg, scan):
     """把 scan.json 轉成網頁／刪除流程共用的 items。"""
@@ -792,6 +1063,24 @@ def build_items(cfg, scan):
     return items
 
 
+def build_all_items(cfg, scans):
+    """多碟合併的項目清單：一份報告、一份勾選集合。
+
+    id 前面加碟代號（C-i001／D-i001），否則兩顆碟的第 3 項會撞在一起，
+    勾了 C 盤的項目會連 D 盤那項一起被選中。
+    父子重疊（nested_in）與預設勾選都在各碟內部先算好，跨碟不會互相影響。
+    """
+    out = []
+    for sc in scans or []:
+        d = norm_drive(sc.get('drive'))
+        for x in build_items(cfg_on(cfg, d), sc):
+            x['drive'] = d
+            x['letter'] = drive_key(d)
+            x['id'] = '%s-%s' % (x['letter'], x['id'])
+            out.append(x)
+    return out
+
+
 def effective_mb(sel):
     """扣除「父項也在選取集合內」的子項，避免父子重複計算。"""
     paths = [x['path'].rstrip('\\').lower() for x in sel]
@@ -833,6 +1122,16 @@ def last_delete_path(cfg):
                         'last_delete_%s.json' % drive_key(cfg['drive']))
 
 
+def global_progress_path(cfg):
+    """跨碟清理的合計進度：一份，內容帶「目前在哪顆碟」。"""
+    return os.path.join(out_dir(cfg), 'delete_progress.json')
+
+
+def global_last_delete_path(cfg):
+    """跨碟清理的合計結果：一份，內含每顆碟的細項。"""
+    return os.path.join(out_dir(cfg), 'last_delete.json')
+
+
 def read_json_quiet(path):
     try:
         with open(path, encoding='utf-8') as f:
@@ -841,12 +1140,27 @@ def read_json_quiet(path):
         return None
 
 
+def _newest(a, b):
+    """兩個紀錄取較新的（依 ts）。清理可能只更新了其中一份，不能只看固定順序。"""
+    if not a:
+        return b
+    if not b:
+        return a
+    try:
+        return a if float(a.get('ts') or 0) >= float(b.get('ts') or 0) else b
+    except (TypeError, ValueError, AttributeError):
+        return a
+
+
 def read_progress(cfg):
-    return read_json_quiet(progress_path(cfg))
+    """優先回傳較新的那份：跨碟合計（delete_progress.json）或單碟進度。"""
+    return _newest(read_json_quiet(global_progress_path(cfg)),
+                   read_json_quiet(progress_path(cfg)))
 
 
 def read_last_delete(cfg):
-    return read_json_quiet(last_delete_path(cfg))
+    return _newest(read_json_quiet(global_last_delete_path(cfg)),
+                   read_json_quiet(last_delete_path(cfg)))
 
 
 def progress_running(cfg, max_age_sec=20):
@@ -860,8 +1174,8 @@ def progress_running(cfg, max_age_sec=20):
 
 
 def _record_last_delete(cfg, result):
-    """把這次執行摘要寫成 last_delete.json（seq 遞增，供桌寵判斷「有新結果」）。"""
-    prev = read_last_delete(cfg) or {}
+    """把這顆碟的執行摘要寫成 last_delete_<X>.json（seq 遞增）。"""
+    prev = read_json_quiet(last_delete_path(cfg)) or {}
     try:
         seq = int(prev.get('seq') or 0) + 1
     except (TypeError, ValueError):
@@ -890,23 +1204,27 @@ def _record_last_delete(cfg, result):
 
 
 # ---------------------------------------------------------------- 網頁
-def render_page(cfg, scan, items, api=False, token=''):
+def render_page(cfg, scans, items, api=False, token=''):
+    """一份報告，包含掃描範圍內所有磁碟的項目。"""
     tpl_path = os.path.join(SCRIPTS, 'page.html')
     with open(tpl_path, 'r', encoding='utf-8') as f:
         tpl = f.read()
-    disk = disk_info(cfg['drive'])
-    drives = drive_summary(cfg)
+    inv = drive_inventory(cfg, scans)
+    totals = merge_scans(scans)
     meta = {
         'drive': cfg['drive'],
-        'drives': drives,
-        'created': scan['created'] if scan else '—',
-        'elapsed_sec': scan['elapsed_sec'] if scan else 0,
-        'truncated': scan['truncated'] if scan else True,
-        'files_seen': scan['files_seen'] if scan else 0,
-        'users_found': scan['users_found'] if scan else [],
+        'drives': [r for r in inv if r['scanned']],
+        'available': inv,
+        'totals': totals,
+        'created': totals['created'] or '—',
+        'elapsed_sec': totals['elapsed_sec'],
+        'truncated': totals['truncated'],
+        'files_seen': totals['files_seen'],
+        'users_found': totals['users_found'],
         'threshold_pct': cfg['alert']['threshold_pct'],
         'exclusions': cfg['delete'].get('default_exclusions', []),
         'default_tiers': cfg['delete'].get('default_tiers', ['A']),
+        'monitor': monitor_drives(cfg),
         'last_delete': read_last_delete(cfg),
         'progress': read_progress(cfg),
     }
@@ -914,29 +1232,29 @@ def render_page(cfg, scan, items, api=False, token=''):
     def j(o):
         return json.dumps(o, ensure_ascii=False).replace('<', '\\u003c')
 
-    for k, v in (('__DATA__', j(items)), ('__DISK__', j(disk)),
+    scope_text = '、'.join(r['letter'] + ':' for r in meta['drives']) or '—'
+    for k, v in (('__DATA__', j(items)), ('__DISK__', j(totals)),
                  ('__META__', j(meta)), ('__NOW__', now_str()),
                  ('__API__', 'true' if api else 'false'),
                  ('__TOKEN__', token),
                  ('__DRIVE__', j(cfg['drive'])),
-                 ('__DRIVES__', j(drives)),
-                 ('__DRIVE_TEXT__',
-                  cfg['drive'].replace('&', '&amp;').replace('<', '&lt;')
-                  .replace('>', '&gt;'))):
+                 ('__DRIVES__', j(meta['drives'])),
+                 ('__SCOPE_TEXT__', scope_text.replace('&', '&amp;')
+                  .replace('<', '&lt;').replace('>', '&gt;'))):
         tpl = tpl.replace(k, v)
     return tpl
 
 
-def do_report(cfg, scan=None):
-    scan = scan or load_scan(cfg)
-    if not scan:
-        scan = do_scan(cfg)
-    items = build_items(cfg, scan)
-    html = render_page(cfg, scan, items, api=False)
+def do_report(cfg, scans=None):
+    """產生「一份」綜合報告。scans 省略時沿用既有快取，完全沒有才掃描。"""
+    scans = scans if scans is not None else (load_scans(cfg) or scan_all(cfg))
+    items = build_all_items(cfg, scans)
+    html = render_page(cfg, scans, items, api=False)
     p = page_path(cfg)
     with open(p, 'w', encoding='utf-8') as f:
         f.write(html)
-    emit('report: %d items -> %s' % (len(items), p))
+    emit('report: %d items from %s -> %s'
+         % (len(items), '、'.join(drive_key(s.get('drive')) for s in scans), p))
     return p
 
 
@@ -1028,14 +1346,27 @@ def backup_small(cfg, targets, stamp):
 
 
 def validate_targets(cfg, paths, items):
-    """回傳 (targets, rejected)。任何不合法路徑都會被拒絕，不是整批中止而是逐項剔除。"""
+    r"""回傳 (targets, rejected)。任何不合法路徑都會被拒絕，不是整批中止而是逐項剔除。
+
+    每條路徑用它「自己那顆碟」的規則驗證，而不是 cfg['drive']——多碟時
+    清單可能同時含 C:\ 與 D:\ 的項目，用主碟去比對會把另一顆碟的路徑全判成越界
+    （或更糟：反過來放行）。允許範圍就是「本次掃描清單裡出現過的碟」。
+    """
     by = {x['path'].rstrip('\\').lower(): x for x in items}
-    drive = cfg['drive'].lower().rstrip('\\')
+    allowed = set()
+    for x in items:
+        d = norm_drive(drive_of(x['path']))
+        if d:
+            allowed.add(d.lower().rstrip('\\'))
     targets, rejected = [], []
     for p in paths:
         low = p.rstrip('\\').lower()
+        drv = norm_drive(drive_of(p))
         # 路徑安全檢查優先，不依賴掃描清單內容（與報告端的可勾狀態同一套規則）
-        ok_scope, why = path_scope_ok(drive, p)
+        if not drv or drv.lower().rstrip('\\') not in allowed:
+            rejected.append({'path': p, 'reason': '不在本次掃描範圍內（請先分析該磁碟）'})
+            continue
+        ok_scope, why = path_scope_ok(drv, p)
         if not ok_scope:
             rejected.append({'path': p, 'reason': why})
             continue
@@ -1045,11 +1376,6 @@ def validate_targets(cfg, paths, items):
             continue
         if x['tier'] == 'C' or not x['selectable'] or x['locked']:
             rejected.append({'path': p, 'reason': 'C 檔／鎖定項，禁止刪除'})
-            continue
-        rel = low[len(drive) + 1:]
-        parts = rel.split('\\')
-        if not parts or not parts[0]:
-            rejected.append({'path': p, 'reason': '非允許的頂層目錄或為磁碟根'})
             continue
         if x['excluded']:
             rejected.append({'path': p, 'reason': '設定排除項'})
@@ -1305,8 +1631,8 @@ def do_delete(cfg, paths, dry_run=False, scan=None, progress=None):
                       % (drive_key(cfg['drive']), stamp))
     with open(rp, 'w', encoding='utf-8') as f:
         json.dump(result, f, ensure_ascii=False, indent=2)
-    lp = os.path.join(out_dir(cfg), 'execution_log.md')
-    L = ['# cdisk-guard 執行紀錄 · %s' % now_str(), '',
+    lp = os.path.join(out_dir(cfg), 'execution_log_%s.md' % drive_key(cfg['drive']))
+    L = ['# cdisk-guard 執行紀錄 · %s · %s' % (drive_key(cfg['drive']), now_str()), '',
          '| 項目 | 數值 |', '|---|---|',
          '| 要求項目 | %d |' % result['requested'],
          '| 實際執行 | %d |' % result['target_count'],
@@ -1352,6 +1678,231 @@ def do_delete(cfg, paths, dry_run=False, scan=None, progress=None):
     return result
 
 
+# ---------------------------------------------------------------- 多碟刪除
+def _merge_status(statuses):
+    """整批的狀態：有任何一顆被中斷就是 ABORTED，有殘留就是 PARTIAL。"""
+    s = [x for x in statuses if x]
+    for bad in ('ABORTED', 'PARTIAL'):
+        if bad in s:
+            return bad
+    return 'EXECUTED' if s else 'DRY_RUN'
+
+
+def do_delete_multi(cfg, paths, dry_run=False, scans=None, progress=None):
+    """把勾選項目按磁碟分組，逐碟跑既有的 do_delete，再合併成一份結果。
+
+    刻意不改 do_delete 的簽名與流程：它是「單碟刪除」這件事的唯一實作，
+    多碟只是外層排程。這樣備份、manifest、回收站、空間對比全部維持原行為，
+    只是每顆碟各一份——跨碟的合計另外寫在 delete_progress.json／last_delete.json。
+    """
+    scans = scans if scans is not None else load_scans(cfg)
+    scan_by = {}
+    for s in scans or []:
+        scan_by[norm_drive(s.get('drive'))] = s
+    order, groups, rejected = [], {}, []
+    for p in paths:
+        d = norm_drive(drive_of(p))
+        if not d or d not in scan_by:
+            rejected.append({'path': p,
+                             'reason': '不在本次掃描範圍內（請先分析該磁碟）'})
+            continue
+        if d not in groups:
+            groups[d] = []
+            order.append(d)
+        groups[d].append(p)
+
+    if not groups:
+        return {'created': now_str(), 'status': 'DRY_RUN' if dry_run else 'EXECUTED',
+                'requested': len(paths), 'target_count': 0, 'target_mb': 0,
+                'effective_mb': 0, 'rejected': rejected, 'per_drive': [],
+                'dry_run': dry_run}
+
+    # 先逐碟驗證一次：算出整批總數，進度條才不會每換一顆碟就從 0 重來
+    pre = []
+    grand_total = 0
+    for d in order:
+        c = cfg_on(cfg, d)
+        items = build_items(c, scan_by[d])
+        targets, rej = validate_targets(c, groups[d], items)
+        rejected.extend(rej)
+        pre.append((d, c, targets))
+        grand_total += len(targets)
+
+    if dry_run:
+        merged = {'created': now_str(), 'status': 'DRY_RUN',
+                  'requested': len(paths), 'target_count': 0, 'target_mb': 0.0,
+                  'effective_mb': 0.0, 'rejected': list(rejected),
+                  'per_drive': [], 'dry_run': True}
+        for d, c, targets in pre:
+            if not targets:
+                continue
+            r = do_delete(c, [t['path'] for t in targets],
+                          dry_run=True, scan=scan_by[d])
+            merged['target_count'] += r['target_count']
+            merged['target_mb'] += r['target_mb']
+            merged['effective_mb'] += r['effective_mb']
+            merged['rejected'].extend(r.get('rejected') or [])
+            merged['per_drive'].append({
+                'drive': d, 'letter': drive_key(d), 'status': r['status'],
+                'target_count': r['target_count'], 'target_mb': r['target_mb'],
+                'effective_mb': r['effective_mb']})
+        merged['target_mb'] = round(merged['target_mb'], 1)
+        merged['effective_mb'] = round(merged['effective_mb'], 1)
+        return merged
+
+    stamp = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
+    prog = {'status': 'RUNNING', 'phase': 'prepare', 'stamp': stamp,
+            'done': 0, 'total': grand_total, 'removed': 0, 'remaining': 0,
+            'current': '', 'drive': order[0], 'drive_index': 1,
+            'drive_count': len(order), 'scope': [drive_key(x) for x in order],
+            'started_at': now_str(), 'ts': time.time(), 'pid': os.getpid(),
+            'target_mb': round(sum(t['mb'] for _d, _c, ts in pre for t in ts), 1)}
+    try:
+        _write_json_atomic(global_progress_path(cfg), prog)
+    except Exception:
+        pass
+
+    base = [0, 0, 0]            # done / removed / remaining 的跨碟累計
+    per, statuses = [], []
+    for idx, (d, c, targets) in enumerate(pre):
+        letter = drive_key(d)
+        if not targets:
+            per.append({'drive': d, 'letter': letter, 'status': 'SKIPPED',
+                        'target_count': 0, 'reason': '驗證後沒有可刪項目'})
+            continue
+
+        def cb(p, _d=d, _letter=letter, _idx=idx):
+            g = dict(p)
+            g['drive'] = _d
+            g['drive_index'] = _idx + 1
+            g['drive_count'] = len(order)
+            g['scope'] = [drive_key(x) for x in order]
+            g['total'] = grand_total
+            g['done'] = min(grand_total, base[0] + int(p.get('done') or 0))
+            g['removed'] = base[1] + int(p.get('removed') or 0)
+            g['remaining'] = base[2] + int(p.get('remaining') or 0)
+            g['ts'] = time.time()
+            try:
+                _write_json_atomic(global_progress_path(cfg), g)
+            except Exception:
+                pass
+            if progress:
+                try:
+                    progress(g)
+                except Exception:
+                    pass
+
+        res = do_delete(c, [t['path'] for t in targets],
+                        dry_run=False, scan=scan_by[d], progress=cb)
+        base[0] += int(res.get('target_count') or 0)
+        base[1] += int(res.get('fully_removed') or 0)
+        base[2] += int(res.get('partial') or 0)
+        statuses.append(res.get('status'))
+        per.append({'drive': d, 'letter': letter, 'status': res.get('status'),
+                    'target_count': res.get('target_count'),
+                    'target_mb': res.get('target_mb'),
+                    'effective_mb': res.get('effective_mb'),
+                    'fully_removed': res.get('fully_removed'),
+                    'partial': res.get('partial'),
+                    'observed_gain_mb': res.get('observed_gain_mb'),
+                    'free_before_mb': res.get('free_before_mb'),
+                    'free_after_mb': res.get('free_after_mb'),
+                    'manifest': res.get('manifest'),
+                    'backup': res.get('backup'),
+                    'log_path': res.get('log_path'),
+                    'recycle_bin_residual': res.get('recycle_bin_residual'),
+                    'recycle_bin_cleared': res.get('recycle_bin_cleared')})
+
+    def num(k):
+        return round(sum(float(p.get(k) or 0) for p in per), 1)
+
+    merged = {
+        'created': now_str(),
+        'started_at': prog['started_at'],
+        'finished_at': now_str(),
+        'status': _merge_status(statuses),
+        'requested': len(paths),
+        'target_count': int(sum(p.get('target_count') or 0 for p in per)),
+        'target_mb': num('target_mb'),
+        'effective_mb': num('effective_mb'),
+        'fully_removed': int(sum(p.get('fully_removed') or 0 for p in per)),
+        'partial': int(sum(p.get('partial') or 0 for p in per)),
+        'free_before_mb': num('free_before_mb'),
+        'free_after_mb': num('free_after_mb'),
+        'observed_gain_mb': num('observed_gain_mb'),
+        'gain_note': ('觀測淨增是各碟合計，受其他程式寫入影響，不等於精確歸因；'
+                      '帳面目標值請見 effective_mb。'),
+        'rejected': rejected,
+        'per_drive': per,
+        'manifests': [p['manifest'] for p in per if p.get('manifest')],
+        'logs': [p['log_path'] for p in per if p.get('log_path')],
+        'backups': [p['backup'].get('path') for p in per
+                    if isinstance(p.get('backup'), dict) and p['backup'].get('path')],
+        'dry_run': False,
+    }
+    merged['manifest'] = merged['manifests'][0] if merged['manifests'] else ''
+    merged['log_path'] = os.path.join(out_dir(cfg), 'execution_log.md')
+
+    # 合計執行紀錄（各碟自己的 execution_log_<X>.md 仍保留逐項結果）
+    L = ['# cdisk-guard 執行紀錄（合計）· %s' % now_str(), '',
+         '| 磁碟 | 狀態 | 執行 | 完全移除 | 殘留 | 帳面 | 實際可釋放 | 觀測淨增 |',
+         '|---|---|---|---|---|---|---|---|']
+    for p in per:
+        L.append('| %s: | %s | %s | %s | %s | %.1f MB | %.1f MB | %.1f MB |' % (
+            p['letter'], p.get('status'), p.get('target_count') or 0,
+            p.get('fully_removed') or 0, p.get('partial') or 0,
+            float(p.get('target_mb') or 0), float(p.get('effective_mb') or 0),
+            float(p.get('observed_gain_mb') or 0)))
+    L += ['| **合計** | %s | %d | %d | %d | %.1f MB | %.1f MB | %.1f MB |' % (
+        merged['status'], merged['target_count'], merged['fully_removed'],
+        merged['partial'], merged['target_mb'], merged['effective_mb'],
+        merged['observed_gain_mb']), '',
+        '> ⚠️ 此操作非常危險，可能導致不可逆的數據丟失！本工具不主動移入回收站，'
+        '僅 <100 MB 小項 ZIP 備份可還原。部分環境會把刪除導向該碟自己的回收站。',
+        '', '## 逐碟紀錄', '']
+    for p in per:
+        L.append('- `%s:` 明細：`%s`' % (p['letter'], p.get('log_path') or '—'))
+        L.append('  manifest：`%s`' % (p.get('manifest') or '—'))
+    if rejected:
+        L += ['', '## 剔除項', '']
+        for r in rejected:
+            L.append('- `%s` — %s' % (r['path'], r['reason']))
+    try:
+        with open(merged['log_path'], 'w', encoding='utf-8') as f:
+            f.write('\n'.join(L))
+    except Exception:
+        pass
+
+    prog.update({'status': 'DONE', 'phase': 'done', 'done': grand_total,
+                 'removed': merged['fully_removed'],
+                 'remaining': merged['partial'], 'current': '', 'ts': time.time()})
+    try:
+        _write_json_atomic(global_progress_path(cfg), prog)
+    except Exception:
+        pass
+
+    # 合計 last_delete（桌寵／網頁讀這一份；逐碟的 last_delete_<X>.json 仍在）
+    gprev = read_json_quiet(global_last_delete_path(cfg)) or {}
+    try:
+        gseq = int(gprev.get('seq') or 0) + 1
+    except (TypeError, ValueError):
+        gseq = 1
+    try:
+        pct = min(float(p.get('free_pct') or 100)
+                  for p in (drive_summary_rows(scans) or [{'free_pct': 100}]))
+    except Exception:
+        pct = 100.0
+    merged.update({'seq': gseq, 'ts': time.time(), 'free_pct': pct})
+    try:
+        _write_json_atomic(global_last_delete_path(cfg), merged)
+    except Exception:
+        pass
+    log(cfg, 'delete done (multi): drives=%s targets=%d fully=%d partial=%d gain=%.1f MB'
+        % (','.join(drive_key(d) for d in order), merged['target_count'],
+           merged['fully_removed'], merged['partial'], merged['observed_gain_mb']))
+    return merged
+
+
 # ---------------------------------------------------------------- 本機後端
 EDGE = r'C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe'
 CHROME = r'C:\Program Files\Google\Chrome\Application\chrome.exe'
@@ -1359,50 +1910,36 @@ _ACTIVE_SERVER = None
 
 
 class GuardServer:
-    def __init__(self, cfg, open_browser=True):
+    def __init__(self, cfg, open_browser=True, drives=None):
         self.cfg = cfg
         self.token = secrets.token_urlsafe(18)
         self._lock = threading.Lock()
-        self._cache = {}          # drive -> (scan, items)；切碟時不必整碟重掃
-        drive = cfg['drive']
-        self.scan = load_scan(cfg) or do_scan(
-            cfg, budget_sec=cfg['scan'].get('serve_budget_sec', 180))
-        self.items = build_items(cfg, self.scan)
-        self._cache[drive] = (self.scan, self.items)
+        self._scan_lock = threading.Lock()
+        # 開頁要顯示「上次實際分析的範圍」，否則改了設定或只掃過一顆碟時，
+        # 頁面會摻進一顆根本沒分析過的碟（顯示成 0 項），看起來像漏掃。
+        self.scope = [norm_drive(d)
+                      for d in (drives or last_scope(cfg) or scan_scope(cfg))]
+        self.scans = []
+        self.items = []
+        self._load_scope(self.scope)
         self.browser = None
         self.open_browser = open_browser
         self._stop = threading.Event()
 
         outer = self
 
-        def cfg_for(drive):
-            """取某顆碟的設定副本。
-
-            cfg['drive'] 是「本次操作的碟」，所有函式都靠它分流；
-            用副本而不是改共用物件，才不會在請求之間互相污染。
-            """
-            d = norm_drive(drive) or norm_drive(outer.cfg['drive'])
-            if d == norm_drive(outer.cfg['drive']):
-                return outer.cfg
-            c = copy.deepcopy(outer.cfg)
-            c['drive'] = d
-            c['drives'] = drive_list(outer.cfg)
-            return c
-
-        def data_for(drive):
-            d = norm_drive(drive) or norm_drive(outer.cfg['drive'])
-            c = cfg_for(d)
-            with outer._lock:
-                if d in outer._cache:
-                    scan = outer._cache[d][0]
-                    items = build_items(c, scan)
-                    return c, scan, items
-            scan = load_scan(c) or do_scan(
-                c, budget_sec=c['scan'].get('serve_budget_sec', 180))
-            items = build_items(c, scan)
-            with outer._lock:
-                outer._cache[d] = (scan, items)
-            return c, scan, items
+        def scan_these(drives):
+            """掃描指定磁碟並換掉目前報告；掃描要幾分鐘，先擋住重複請求。"""
+            if not outer._scan_lock.acquire(blocking=False):
+                return None
+            try:
+                scans = scan_all(outer.cfg, drives, budget_sec=None, verbose=True)
+                if not scans:
+                    return []
+                outer._load_scope([s['drive'] for s in scans])
+                return scans
+            finally:
+                outer._scan_lock.release()
 
         class H(BaseHTTPRequestHandler):
             def log_message(self, *a):
@@ -1422,33 +1959,25 @@ class GuardServer:
 
             def do_GET(self):
                 path = self.path.split('?')[0]
-                q = parse_qs(self.path.split('?', 1)[1]) if '?' in self.path else {}
-                want = (q.get('drive') or [None])[0]
                 if path in ('/', '/index.html'):
-                    c, sc, it = data_for(want)
-                    html = render_page(c, sc, it, api=True, token=outer.token)
+                    html = render_page(outer.cfg, outer.scans, outer.items,
+                                       api=True, token=outer.token)
                     self._send(200, html.encode('utf-8'), 'text/html; charset=utf-8')
                 elif path == '/api/state':
-                    c, sc, it = data_for(want)
-                    self._json({'disk': disk_info(c['drive']),
-                                'drive': c['drive'],
-                                'drives': drive_summary(c),
-                                'meta': {'created': sc['created'],
-                                         'items': len(it),
-                                         'truncated': sc['truncated']},
-                                'progress': read_progress(c),
-                                'last_delete': read_last_delete(c),
+                    self._json({'drives': drive_summary_rows(outer.scans),
+                                'available': drive_inventory(outer.cfg, outer.scans),
+                                'scope': outer.scope,
+                                'totals': merge_scans(outer.scans),
+                                'progress': read_progress(outer.cfg),
+                                'last_delete': read_last_delete(outer.cfg),
                                 'token': outer.token})
                 elif path == '/api/progress':
                     # 網頁在刪除期間每 0.7 s 輪詢；running=False 代表已結束／已中止
-                    c = cfg_for(want)
-                    p = read_progress(c)
                     self._json({'ok': True,
-                                'running': bool(progress_running(c)),
-                                'progress': p,
-                                'drive': c['drive'],
-                                'disk': disk_info(c['drive']),
-                                'last_delete': read_last_delete(c)})
+                                'running': bool(progress_running(outer.cfg)),
+                                'progress': read_progress(outer.cfg),
+                                'drives': drive_summary_rows(outer.scans),
+                                'last_delete': read_last_delete(outer.cfg)})
                 elif path == '/favicon.ico':
                     self._send(204, b'', 'image/x-icon')
                 else:
@@ -1467,17 +1996,27 @@ class GuardServer:
                     t = threading.Thread(target=outer.close, daemon=True)
                     t.start()
                     return self._json({'ok': True, 'message': '網頁已關閉'})
-                if path == '/api/rescan':
-                    c = cfg_for(body.get('drive'))
-                    scan = do_scan(c)
-                    items = build_items(c, scan)
-                    with outer._lock:
-                        outer._cache[norm_drive(c['drive'])] = (scan, items)
-                        if norm_drive(c['drive']) == norm_drive(outer.cfg['drive']):
-                            outer.scan, outer.items = scan, items
-                    return self._json({'ok': True, 'drive': c['drive'],
-                                       'created': scan['created'],
-                                       'items': len(items)})
+                if path in ('/api/scan', '/api/rescan'):
+                    want = body.get('drives')
+                    if not isinstance(want, list) or not want:
+                        want = all_drives() or [system_drive()]
+                    valid = set(all_drives())
+                    picks = []
+                    for d in want:
+                        n = norm_drive(d)
+                        if n and n in valid and n not in picks:
+                            picks.append(n)
+                    if not picks:
+                        return self._json({'error': '沒有可讀取的磁碟'}, 400)
+                    res = scan_these(picks)
+                    if res is None:
+                        return self._json({'error': '已有分析在進行中，請稍候'}, 409)
+                    return self._json({'ok': True,
+                                       'scope': outer.scope,
+                                       'drives': [drive_key(s['drive']) for s in res],
+                                       'created': merge_scans(res)['created'],
+                                       'items': len(outer.items),
+                                       'totals': merge_scans(res)})
                 if path == '/api/delete':
                     if not body.get('confirm'):
                         return self._json({'error': 'need explicit confirm'}, 400)
@@ -1485,18 +2024,8 @@ class GuardServer:
                     if not isinstance(paths, list) or not paths:
                         return self._json({'error': 'empty selection'}, 400)
                     dry = bool(body.get('dry_run'))
-                    c = cfg_for(body.get('drive'))
-                    key = norm_drive(c['drive'])
-                    scan = (outer._cache.get(key) or (None, None))[0]
-                    if scan is None:
-                        scan = load_scan(c) or do_scan(c, verbose=True)
-                    res = do_delete(c, paths, dry_run=dry, scan=scan)
-                    if not dry:
-                        items = build_items(c, scan)
-                        with outer._lock:
-                            outer._cache[key] = (scan, items)
-                            if key == norm_drive(outer.cfg['drive']):
-                                outer.items = items
+                    res = do_delete_multi(outer.cfg, paths, dry_run=dry,
+                                          scans=outer.scans)
                     return self._json(res)
                 return self._json({'error': 'not found'}, 404)
 
@@ -1506,6 +2035,19 @@ class GuardServer:
         self.httpd.daemon_threads = True
         self.port = self.httpd.server_address[1]
         self.url = 'http://%s:%d/' % (host, self.port)
+
+    def _load_scope(self, drives):
+        """載入指定範圍的掃描快取。
+
+        刻意不在這裡自動掃描：全機掃描要幾分鐘，開個網頁不該卡住。
+        沒有快取時頁面會直接跳出「選擇磁碟」清單，由使用者按開始。
+        """
+        want = [norm_drive(d) for d in drives if norm_drive(d)]
+        scans = load_scans(self.cfg, want)
+        with self._lock:
+            self.scans = scans
+            self.items = build_all_items(self.cfg, scans)
+            self.scope = [norm_drive(s['drive']) for s in scans] or want
 
     def start(self):
         t = threading.Thread(target=self.httpd.serve_forever, daemon=True)
@@ -1666,8 +2208,11 @@ def weekly_should_run(cfg, state, disk, now=None):
 
 
 def run_weekly(cfg, state, disk, reason):
-    scan = do_scan(cfg, verbose=True)
-    do_report(cfg, scan)
+    # 週期分析是「產生一份完整報告」，所以掃描範圍內的碟都要掃；
+    # 監控（警示）只看 monitor_drives，兩者刻意分開。
+    scans = scan_all(cfg, verbose=True)
+    do_report(cfg, scans)
+    summary = merge_scans(scans)
     level = decide_notify(cfg, disk)
     sd = state_for(state, cfg['drive'])
     sd['last_weekly_date'] = datetime.date.today().isoformat()
@@ -1676,18 +2221,19 @@ def run_weekly(cfg, state, disk, reason):
     sd['last_weekly_reason'] = reason
     sd['last_scan_ts'] = time.time()
     write_state(cfg, state)
-    log(cfg, 'weekly analysis done: files=%d elapsed=%ss pct=%.2f level=%s reason=%s' %
-        (scan['files_seen'], scan['elapsed_sec'], disk['free_pct'], level, reason))
+    log(cfg, 'weekly analysis done: drives=%s files=%d elapsed=%ss pct=%.2f level=%s reason=%s' %
+        (','.join(drive_key(d) for d in summary['drives']), summary['files_seen'],
+         summary['elapsed_sec'], disk['free_pct'], level, reason))
     if level == 'alert':
         write_notice(cfg, disk, '週一分析後仍低於 2%')
-        return 'alert', scan
+        return 'alert', summary
     if level == 'warn':
         write_notice(cfg, disk, '週一分析後介於 2%~10%')
         if cfg['alert'].get('notify_on_warn_pct', False):
-            return 'warn_alert', scan
-        return 'warn_logged', scan
+            return 'warn_alert', summary
+        return 'warn_logged', summary
     log(cfg, 'weekly analysis: no notification needed')
-    return 'none', scan
+    return 'none', summary
 
 
 # ---------------------------------------------------------------- watch
@@ -1966,22 +2512,24 @@ def cmd_watch(cfg, once=False, interval=None, no_alert=False, force_alert=False,
             pass
         while True:
             # 每次循環重讀設定，改設定不需重啟；但保留 CLI 覆蓋值
-            cfg = load_config(config_path) if config_path else load_config()
+            cfg = normalize_config(load_config(config_path) if config_path
+                                   else load_config())
             if budget:
                 cfg['scan']['budget_sec'] = budget
             state = read_state(cfg)
-            disk = disk_info(cfg['drive'])
-            log(cfg, 'check pct=%.2f free=%.2fGB' %
-                (disk['free_pct'], disk['free_gb']))
+            # 警示看「監控範圍」（預設只有 C:）；分析看「掃描範圍」（預設全部碟）
+            disk, dv = worst_monitor(cfg)
+            log(cfg, 'check %s pct=%.2f free=%.2fGB' %
+                (dv, disk['free_pct'], disk['free_gb']))
 
             if disk['free_pct'] < cfg['alert']['threshold_pct'] or force_alert:
                 if not no_alert:
                     # GuardServer 自帶背景執行緒，這裡不阻塞主迴圈
-                    do_alert(cfg, disk, force=force_alert)
+                    do_alert(cfg_on(cfg, dv), disk, force=force_alert)
             else:
-                ok, reason = weekly_should_run(cfg, state, disk)
+                ok, reason = weekly_should_run(cfg, state, disk_info(cfg['drive']))
                 if ok:
-                    run_weekly(cfg, state, disk, reason)
+                    run_weekly(cfg, state, disk_info(cfg['drive']), reason)
             if once:
                 break
             time.sleep(iv)
@@ -2013,8 +2561,10 @@ def cmd_selftest(cfg, with_ui=False):
     t, _ = classify('root', 'Users', 'C:\\Users')
     ok.append(('classify Users locked', t == 'C', t))
 
-    scan = load_scan(cfg) or do_scan(cfg, budget_sec=25, verbose=True)
-    items = build_items(cfg, scan)
+    # 單碟自測：用系統碟就好，不必為了 selftest 掃全機
+    one = cfg_on(cfg, system_drive())
+    scan = load_scan(one) or do_scan(one, budget_sec=25, verbose=True)
+    items = build_items(one, scan)
     a = [x for x in items if x['default']]
     ok.append(('build_items', len(items) > 0, '%d items, %d default A' %
                (len(items), len(a))))
@@ -2022,14 +2572,29 @@ def cmd_selftest(cfg, with_ui=False):
     ok.append(('exclusion respected',
                all('npm-cache' not in x['path'].lower() for x in a), ''))
 
-    html = render_page(cfg, scan, items, api=False)
+    scans = [scan]
+    allitems = build_all_items(cfg, scans)
+    ok.append(('build_all_items', len(allitems) == len(items) and
+               all(x.get('drive') and x.get('letter') for x in allitems),
+               '%d items, id=%s' % (len(allitems), allitems[0]['id'] if allitems else '—')))
+    ok.append(('scope defaults', bool(scan_scope(cfg)) and
+               all(d in all_drives() or drive_exists(d) for d in scan_scope(cfg)),
+               'scope=%s monitor=%s' % (
+                   '、'.join(drive_key(d) for d in scan_scope(cfg)),
+                   '、'.join(drive_key(d) for d in monitor_drives(cfg)))))
+    ok.append(('monitor defaults to system',
+               monitor_drives(cfg) == [system_drive()] or
+               cfg.get('monitor', {}).get('drives'),
+               '、'.join(drive_key(d) for d in monitor_drives(cfg))))
+
+    html = render_page(cfg, scans, allitems, api=False)
     ok.append(('render_page', '__DATA__' not in html and 'const DATA' in html,
                '%d bytes' % len(html.encode('utf-8'))))
     p = page_path(cfg)
     with open(p, 'w', encoding='utf-8') as f:
         f.write(html)
 
-    dry = do_delete(cfg, [x['path'] for x in a[:5]], dry_run=True, scan=scan)
+    dry = do_delete_multi(cfg, [x['path'] for x in a[:5]], dry_run=True, scans=scans)
     ok.append(('delete dry-run', dry['status'] == 'DRY_RUN' and
                dry['target_count'] >= 0, 'targets=%d rejected=%d' %
                (dry['target_count'], len(dry['rejected']))))
@@ -2047,7 +2612,8 @@ def cmd_selftest(cfg, with_ui=False):
                    'port=%d' % srv.port))
         with urllib.request.urlopen(srv.url + 'api/state', timeout=5) as r:
             st = json.loads(r.read().decode('utf-8'))
-        ok.append(('server /api/state', 'disk' in st and 'token' in st, ''))
+        ok.append(('server /api/state', 'drives' in st and 'token' in st and
+                   'totals' in st, ''))
         ok.append(('server bound loopback', srv.httpd.server_address[0] == '127.0.0.1', ''))
     except Exception as e:
         ok.append(('server', False, str(e)))
@@ -2088,7 +2654,10 @@ def main(argv=None):
     sub.add_parser('status')
     p = sub.add_parser('scan')
     p.add_argument('--budget', type=int, default=None, dest='scan_budget')
-    sub.add_parser('report')
+    p.add_argument('--drives', default=None,
+                   help='要掃描的磁碟，逗號分隔（例：C:,D:）；省略＝設定範圍（預設全部）')
+    p = sub.add_parser('report')
+    p.add_argument('--drives', default=None, help='只輸出這些磁碟的綜合報告')
     p = sub.add_parser('serve')
     p.add_argument('--no-browser', action='store_true')
     p = sub.add_parser('alert')
@@ -2118,14 +2687,22 @@ def main(argv=None):
     dry = a.dry_run or getattr(a, 'sub_dry_run', False)
     if budget:
         cfg['scan']['budget_sec'] = budget
+    if getattr(a, 'drives', None):
+        cfg['_scope'] = [norm_drive(x) for x in a.drives.split(',') if norm_drive(x)]
 
     if a.cmd == 'status':
-        emit(json.dumps(disk_info(cfg['drive']), ensure_ascii=False, indent=2))
+        out = {'primary': disk_info(cfg['drive']),
+               'scan_scope': scan_scope(cfg),
+               'monitor': monitor_drives(cfg),
+               'drives': drive_summary(cfg, scan_scope(cfg))}
+        emit(json.dumps(out, ensure_ascii=False, indent=2))
         return 0
     if a.cmd == 'scan':
-        s = do_scan(cfg, verbose=True)
-        it = build_items(cfg, s)
-        emit('items=%d defaultA=%d' % (len(it), sum(1 for x in it if x['default'])))
+        scans = scan_all(cfg, verbose=True)
+        it = build_all_items(cfg, scans)
+        emit('drives=%s items=%d defaultA=%d' %
+             ('、'.join(drive_key(s['drive']) for s in scans), len(it),
+              sum(1 for x in it if x['default'])))
         return 0
     if a.cmd == 'report':
         do_report(cfg)
@@ -2156,8 +2733,8 @@ def main(argv=None):
                          no_alert=a.no_alert, force_alert=a.force_alert,
                          config_path=a.config, budget=budget)
     if a.cmd == 'delete':
-        scan = load_scan(cfg) or do_scan(cfg, verbose=True)
-        items = build_items(cfg, scan)
+        scans = load_scans(cfg) or scan_all(cfg, verbose=True)
+        items = build_all_items(cfg, scans)
         if a.resume:
             if not os.path.exists(a.resume):
                 emit('找不到 manifest：%s' % a.resume)
@@ -2174,12 +2751,12 @@ def main(argv=None):
         else:
             paths = a.paths or [x['path'] for x in items if x['default']]
         if dry or not a.confirm:
-            r = do_delete(cfg, paths, dry_run=True, scan=scan)
+            r = do_delete_multi(cfg, paths, dry_run=True, scans=scans)
             emit(json.dumps(r, ensure_ascii=False, indent=2))
             if not a.confirm:
                 emit('(add --confirm to actually delete)')
             return 0
-        r = do_delete(cfg, paths, dry_run=False, scan=scan)
+        r = do_delete_multi(cfg, paths, dry_run=False, scans=scans)
         emit(json.dumps({k: v for k, v in r.items() if k != 'outcomes'},
                         ensure_ascii=False, indent=2))
         return 0

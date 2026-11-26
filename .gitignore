@@ -9,6 +9,9 @@ _delete_test/
 backup/
 prototypes/
 
+# 多碟測試用的 VHD 與 headless 瀏覽器設定檔
+_vhd/
+
 # 開發過程的工作筆記（含本機路徑與內部紀錄）
 HANDOFF.md
 STATUS.md

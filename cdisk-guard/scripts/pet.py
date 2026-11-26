@@ -872,9 +872,14 @@ class PetApp:
             NIM_MODIFY if action is None else action, ctypes.byref(n))
 
     def tip_text(self):
-        d = C.disk_info(self.cfg['drive'])
-        return ('DiskGuard · C: %.2f%% 可用 · 桌寵%s' %
-                (d['free_pct'], '暫停' if time.time() < self.paused_until else '守護中'))
+        # 監控範圍內最緊張的那顆（預設只有 C:，行為與舊版相同）
+        try:
+            d, dv = C.worst_monitor(self.cfg)
+        except Exception:
+            d, dv = C.disk_info(self.cfg['drive']), self.cfg['drive']
+        return ('DiskGuard · %s %.2f%% 可用 · 桌寵%s' %
+                (C.drive_key(dv), d['free_pct'],
+                 '暫停' if time.time() < self.paused_until else '守護中'))
 
     def tray_icon(self, alert=False):
         # 與桌寵主角「小碟」同造型的專屬 ICO；缺失時才降級回系統圖示
@@ -1042,8 +1047,9 @@ class PetApp:
     # ---------- 面板 ----------
     def _panel_size(self):
         # 多碟時容量區塊一碟一行；4 顆以內與舊版同高，超過才往下長。
+        # 這裡用「監控範圍」（預設只有 C:），不是掃描範圍——面板是看剩餘空間的。
         try:
-            n = len(C.drive_list(self.cfg))
+            n = len(C.monitor_drives(self.cfg))
         except Exception:
             n = 1
         return self._fs(340), self._fs(264) + self._fs(22) * max(0, n - 4)
@@ -1098,13 +1104,14 @@ class PetApp:
 
         # 多碟（>1）時，原本「總容量／已用／剩餘／可用比例」四行改成一碟一行，
         # 一眼看出哪顆快滿；單碟時版面與舊版完全相同。後四項永遠是「當前碟」的。
+        # 這裡列的是監控範圍（monitor.drives，預設只有 C:）。
         try:
-            many = C.drive_list(self.cfg)
+            many = C.monitor_drives(self.cfg)
         except Exception:
             many = [self.cfg['drive']]
         if len(many) > 1:
             head = []
-            for dd in C.drive_summary(self.cfg):
+            for dd in C.drive_summary(self.cfg, many):
                 if dd.get('ok'):
                     head.append((dd['letter'] + ':',
                                  '%.1f／%.0f GB · %.1f%%' % (
@@ -1703,6 +1710,22 @@ class PetApp:
             C.log(self.cfg, 'pet menu: request on-demand local page')
             event(self.cfg, 'menu_open_page')
         elif cid == 1002:
+            # 多碟機器：先讓使用者勾要分析哪幾顆（預設全選），再開掃。
+            # 單碟機器維持原本「按了就背景跑」的行為，不多彈一個視窗。
+            try:
+                scope = C.drive_list(self.cfg)
+            except Exception:
+                scope = [self.cfg['drive']]
+            if len(scope) > 1:
+                self.sfx('page_open')
+                self.show_bubble('請選擇要分析的磁碟',
+                                 sub='已開啟清單，預設全部（%d 顆）' % len(scope),
+                                 hold=5.0)
+                self.request_page('pick')
+                C.log(self.cfg, 'pet menu: multi-drive pick before scan (%d drives)'
+                      % len(scope))
+                event(self.cfg, 'menu_scan_pick', drives=len(scope))
+                return
             self.sfx('scan')
             # 使用者按了就是想知道結果：先講清楚「完成後會自動開頁」，避免
             # 分析跑兩三分鐘期間他以為沒反應又去按第二次。
@@ -2268,17 +2291,20 @@ class PetApp:
                 try:
                     with self.state_lock:
                         st2 = C.read_state(cfg) or {}
-                        st2['last_weekly_status'] = level
-                        st2['last_weekly_ts'] = time.time()
+                        sd = C.state_for(st2, cfg['drive'])
+                        sd['last_weekly_status'] = level
+                        sd['last_weekly_ts'] = time.time()
                         C.write_state(cfg, st2)
                 except Exception:
                     pass
             else:
-                scan = C.do_scan(cfg)
-                C.do_report(cfg, scan)
+                # 一份綜合報告：掃描範圍內每顆碟都掃，再合成一頁
+                scans = C.scan_all(cfg)
+                C.do_report(cfg, scans)
+                scan = C.merge_scans(scans)
                 with self.state_lock:
                     st = C.read_state(cfg) or {}
-                    st['last_scan_ts'] = time.time()
+                    C.state_for(st, cfg['drive'])['last_scan_ts'] = time.time()
                     C.write_state(cfg, st)
                 level = C.decide_notify(cfg, disk)
                 if level == 'alert':
@@ -2345,6 +2371,10 @@ class PetApp:
 
             setattr(rh, name, wrapped)
 
+    def _page_url(self, url, reason='manual'):
+        """多碟時先開「選磁碟」清單；單碟照舊直接開報告。"""
+        return url + '?pick=1' if reason == 'pick' else url
+
     def _serve_open(self, cfg, reason='manual'):
         """F10：按需 GuardServer；只有這裡會開監聽埠，閒置後自動關。"""
         if not self.serve_busy.acquire(blocking=False):
@@ -2353,7 +2383,7 @@ class PetApp:
             srv = self.server
             if srv and not getattr(srv, '_stop', None).is_set():
                 self.server_last_active = time.time()
-                self._browser_open(srv.url)
+                self._browser_open(self._page_url(srv.url, reason))
                 C.log(self.cfg, 'pet serve reuse %s reason=%s' % (srv.url, reason))
                 event(self.cfg, 'serve_reuse', reason=reason)
                 return
@@ -2363,7 +2393,7 @@ class PetApp:
             C._ACTIVE_SERVER = srv
             self.server = srv
             self.server_last_active = time.time()
-            self._browser_open(url)
+            self._browser_open(self._page_url(url, reason))
             C.log(self.cfg, 'pet serve on demand %s reason=%s port=%d'
                   % (url, reason, srv.port))
             event(self.cfg, 'serve_open', reason=reason, port=srv.port)
@@ -2424,9 +2454,10 @@ class PetApp:
                     self.scan_req.clear()
                     self._run_scan_flow(cfg, self.scan_reason)
                 if now >= next_check:
-                    # 逐碟檢查：任何一顆低於門檻都要警示，取最危險的那顆。
+                    # 逐碟檢查「監控範圍」：預設只有 C:。掃描／清理範圍是另一回事，
+                    # 否則 D 盤一低就彈警示，會讓人以為 C 盤出事了。
                     lows = []
-                    for dv in C.drive_list(cfg):
+                    for dv in C.monitor_drives(cfg):
                         try:
                             di = C.disk_info(dv)
                         except OSError:

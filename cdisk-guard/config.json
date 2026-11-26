@@ -1,7 +1,11 @@
 {
-  "_comment": "cdisk-guard 設定。所有路徑相對於技能根目錄，除非以磁碟機代號開頭。修改後不需重裝，watch 每次循環會重新讀取。",
+  "_comment": "cdisk-guard 設定。所有路徑相對於技能根目錄，除非以磁碟機代號開頭。修改後不需重裝，watch 每次循環會重新讀取。drives=auto 表示本機所有固定碟；monitor.drives 只影響剩餘空間警示。",
   "drive": "C:\\",
-  "drives": ["C:\\"],
+  "drives": "auto",
+  "monitor": {
+    "drives": ["C:\\"],
+    "_comment": "只監控這幾顆碟的剩餘空間（警示／托盤）。分析與清理範圍看 drives，兩者刻意分開。"
+  },
   "alert": {
     "threshold_pct": 2.0,
     "warn_pct": 10.0,
@@ -50,7 +54,7 @@
   },
   "paths": {
     "output_dir": "data",
-    "page_filename": "{drive}盘清理清单.html",
+    "page_filename": "磁碟清理清單.html",
     "log_filename": "cdisk-guard.log"
   }
 }

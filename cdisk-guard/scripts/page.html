@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>__DRIVE_TEXT__ 磁碟清理清單 · 三檔分級 · cdisk-guard</title>
+<title>磁碟清理清單 · 三檔分級 · cdisk-guard</title>
 <style>
 :root{
   --bg:#0d1117; --bg2:#111820; --card:#161d26; --card2:#1b2530;
@@ -47,6 +47,7 @@ button.ghost{background:transparent}
 .stat b{color:var(--a);font-size:16px}
 section{margin:30px 0}
 h2{font-size:18px;margin:0 0 4px;padding-bottom:8px;border-bottom:1px solid var(--line)}
+h2 .cnt{font-size:12px;font-weight:400;color:var(--tx3);margin-left:8px}
 .desc{color:var(--tx2);font-size:12.5px;margin:8px 0 14px}
 table{width:100%;border-collapse:collapse;background:var(--card);
  border:1px solid var(--line);border-radius:10px;overflow:hidden;font-size:13px}
@@ -65,33 +66,49 @@ input[type=checkbox]:disabled{cursor:not-allowed;opacity:.35}
 .nm{font-weight:600;word-break:break-word}
 .path{color:var(--tx3);font-size:11.5px;word-break:break-all;font-family:Consolas,"Courier New",monospace}
 .sz{text-align:right;white-space:nowrap;font-variant-numeric:tabular-nums;font-weight:600}
+/* 表格自己橫向捲，不要讓整頁被撐寬（手機上原本會把右側「佔用」推出畫面） */
+.tw{overflow-x:auto;-webkit-overflow-scrolling:touch;border-radius:10px}
 .note{color:var(--tx2);font-size:12px;max-width:430px}
 .tag{display:inline-block;font-size:10px;padding:1px 6px;border-radius:4px;
  border:1px solid var(--line);color:var(--tx3);margin-left:6px}
 .tag.def{color:#7ee787;border-color:#2f6b3c}
 .tag.skip{color:#f0cc6b;border-color:#6b5518}
+.tag.drv{color:#cfe4ff;border-color:#2f5378;background:#132132;margin:0 6px 0 0;font-weight:600}
 .nav{display:flex;flex-wrap:wrap;gap:8px;margin:10px 0 0}
 .nav a{font-size:12px;padding:5px 10px;background:var(--card);border:1px solid var(--line);border-radius:20px}
-.drives{display:none;flex-wrap:wrap;gap:8px;margin:12px 0 0}
-.drives.on{display:flex}
-.drives a,.drives span{font-size:12px;padding:5px 11px;border-radius:20px;
- background:var(--card);border:1px solid var(--line);color:var(--tx2);
- font-variant-numeric:tabular-nums;text-decoration:none}
-.drives .cur{background:#1c3a5e;border-color:var(--pri);color:#cfe4ff;font-weight:600}
-.drives .bad{opacity:.45;text-decoration:line-through}
+.chips{display:none;flex-wrap:wrap;gap:8px;margin:12px 0 0}
+.chips.on{display:flex}
+.chip{font-size:12px;padding:5px 11px;border-radius:20px;background:var(--card);
+ border:1px solid var(--line);color:var(--tx2);font-variant-numeric:tabular-nums;cursor:pointer}
+.chip:hover{border-color:var(--pri)}
+.chip.on{background:#1c3a5e;border-color:var(--pri);color:#cfe4ff;font-weight:600}
+.chip.bad{opacity:.45;cursor:not-allowed}
+.chip .lock{color:var(--tx3);font-size:11px}
 footer{margin-top:44px;padding-top:16px;border-top:1px solid var(--line);color:var(--tx3);font-size:12px}
 .mask{position:fixed;inset:0;background:rgba(0,0,0,.78);z-index:100;display:none;
  align-items:center;justify-content:center;padding:18px}
 .mask.show{display:flex}
 .modal{background:var(--card);border:1px solid #6b2626;border-radius:12px;
  width:min(820px,100%);max-height:88vh;display:flex;flex-direction:column}
+.modal.plain{border-color:var(--line)}
 .mh{padding:16px 20px;border-bottom:1px solid var(--line);font-size:17px;font-weight:650;color:#ff9b95}
+.modal.plain .mh{color:var(--tx)}
 .mb{padding:16px 20px;overflow:auto;font-size:13px}
 .mb ul{padding-left:20px;margin:10px 0}
 .mb li{margin:5px 0;word-break:break-all}
 .mf{padding:14px 20px;border-top:1px solid var(--line);display:flex;gap:10px;justify-content:flex-end;flex-wrap:wrap}
 .result{margin-top:14px;border:1px solid var(--line);border-radius:8px;padding:12px 16px;background:var(--bg2)}
 .result table{margin-top:10px}
+.pick{display:flex;flex-direction:column;gap:8px;margin:12px 0}
+.pick label{display:flex;align-items:center;gap:10px;padding:10px 12px;border:1px solid var(--line);
+ border-radius:8px;background:var(--bg2);cursor:pointer}
+.pick label:hover{border-color:var(--pri)}
+.pick .nm2{font-weight:600;font-variant-numeric:tabular-nums}
+.pick .meta2{color:var(--tx3);font-size:12px;margin-left:auto;font-variant-numeric:tabular-nums}
+.pick label.off{opacity:.45;cursor:not-allowed}
+.spin{display:inline-block;width:14px;height:14px;border:2px solid #2a3644;
+ border-top-color:var(--pri);border-radius:50%;animation:sp .8s linear infinite;vertical-align:-2px}
+@keyframes sp{to{transform:rotate(360deg)}}
 @media(max-width:760px){
  .wrap{padding:14px 10px 70px}
  h1{font-size:19px}
@@ -99,6 +116,7 @@ footer{margin-top:44px;padding-top:16px;border-top:1px solid var(--line);color:v
  table{font-size:12px}
  th:nth-child(5),td:nth-child(5){display:none}
  .note{max-width:none}
+ .tw table{min-width:620px}
  .toolbar{gap:7px;padding:10px}
  button{padding:6px 10px;font-size:12px}
 }
@@ -107,11 +125,11 @@ footer{margin-top:44px;padding-top:16px;border-top:1px solid var(--line);color:v
 <body>
 <div class="wrap">
 <header>
-  <h1>__DRIVE_TEXT__ 磁碟清理清單 · 三檔分級</h1>
-  <div class="sub">掃描時間 __NOW__ ｜ cdisk-guard 單次遍歷（跳過 junction）｜ <b id="modehint"></b></div>
-  <div class="drives" id="drives"></div>
+  <h1>磁碟清理清單 · 三檔分級</h1>
+  <div class="sub">掃描 __NOW__ ｜ 範圍 <b>__SCOPE_TEXT__</b> ｜ 一份報告包含所有已分析磁碟（單次遍歷、跳過 junction） ｜ <b id="modehint"></b></div>
+  <div class="chips" id="chips"></div>
   <div class="nav">
-    <a href="#s-root">▸ __DRIVE_TEXT__ 根目錄</a><a href="#s-users">▸ 各用戶佔用</a>
+    <a href="#s-root">▸ 根目錄</a><a href="#s-users">▸ 各用戶佔用</a>
     <a href="#s-useritem">▸ 用戶目錄明細</a><a href="#s-junk">▸ 已知垃圾點</a>
     <a href="#s-appdata">▸ AppData 細項</a><a href="#s-big">▸ 大檔案</a>
     <a href="#s-rule">▸ 安全邊界</a>
@@ -122,6 +140,7 @@ footer{margin-top:44px;padding-top:16px;border-top:1px solid var(--line);color:v
 <div class="bar" id="diskbar"><i style="width:0%"></i></div>
 <div class="sub" id="diskhint"></div>
 <div id="lastrun" style="display:none"></div>
+<div id="missing"></div>
 
 <div class="notice">✅ <b>安全度分級：</b>A 檔＝臨時檔／快取／安裝包殘留，可放心刪；B 檔＝軟體資料或自建目錄，需你判斷；C 檔＝系統元件／個人資料／憑證，<b>checkbox 已鎖定，後端也會再次拒絕</b>。<b>預設已勾選所有 A 檔</b>（依設定排除的項目除外）。</div>
 <div class="danger" id="dangerbox">⚠️ <b>此操作非常危險，可能導致不可逆的數據丟失！</b> 本頁由只綁 127.0.0.1 的本機後端提供，按下「執行刪除」會先弹出確認視窗逐項列出完整路徑；再次確認後<b>直接刪除</b>勾選項目，本工具不主動移入回收站（部分環境下非系統碟仍可能被系統導向該碟回收站）。僅 &lt;100 MB 小項有 ZIP 備份可還原。</div>
@@ -133,40 +152,41 @@ footer{margin-top:44px;padding-top:16px;border-top:1px solid var(--line);color:v
   <button id="btn-a">只選 A 檔</button>
   <button id="btn-default">恢復預設勾選</button>
   <button id="btn-none" class="ghost">取消全選</button>
-  <button id="btn-rescan" class="ghost">重新掃描</button>
+  <button id="btn-rescan" class="ghost">選擇磁碟並重新分析</button>
   <span class="stat" id="stat"></span>
   <button id="btn-delete" class="primary">執行刪除</button>
   <button id="btn-close" class="ghost">B. 人工處理／關閉網頁</button>
 </div>
 
-<section id="s-root"><h2>一、__DRIVE_TEXT__ 根目錄</h2>
- <div class="desc">依佔用大小排列；前三項與 Windows 等系統元件歸 C 檔，禁止勾選。</div>
+<section id="s-root"><h2>一、各磁碟根目錄<span class="cnt" id="c-root"></span></h2>
+ <div class="desc">依佔用大小排列；系統元件（Windows、Program Files、pagefile.sys 等）歸 C 檔，禁止勾選。</div>
  <div id="t-root"></div></section>
-<section id="s-users"><h2>二、__DRIVE_TEXT__Users 各用戶佔用</h2>
+<section id="s-users"><h2>二、各用戶佔用<span class="cnt" id="c-users"></span></h2>
  <div class="desc">單次遍歷、排除 reparse point，與其他區塊同一資料來源，不會出現兩套口徑。使用者設定檔總目錄不可整刪。</div>
  <div id="t-users"></div></section>
-<section id="s-useritem"><h2>三、各用戶目錄明細</h2>
+<section id="s-useritem"><h2>三、各用戶目錄明細<span class="cnt" id="c-useritem"></span></h2>
  <div class="desc">逐用戶列出第一層目錄內容與佔用；個人文件與憑證目錄一律鎖定。</div>
  <div id="t-useritem"></div></section>
-<section id="s-junk"><h2>四、已知垃圾點</h2>
+<section id="s-junk"><h2>四、已知垃圾點<span class="cnt" id="c-junk"></span></h2>
  <div class="desc">系統與應用程式快取、暫存、更新包；A 檔為主要回收來源。</div>
  <div id="t-junk"></div></section>
-<section id="s-appdata"><h2>五、AppData 細項</h2>
+<section id="s-appdata"><h2>五、AppData 細項<span class="cnt" id="c-appdata"></span></h2>
  <div class="desc">Local／Roaming 第一層子目錄，以及 Temp 下的大型子項。</div>
  <div id="t-appdata"></div></section>
-<section id="s-big"><h2>六、大檔案 TOP</h2>
+<section id="s-big"><h2>六、大檔案 TOP<span class="cnt" id="c-big"></span></h2>
  <div class="desc">大於設定門檻的單一檔案；安裝包／壓縮檔歸 B 檔，請自行判斷。</div>
  <div id="t-big"></div></section>
 <section id="s-rule"><h2>七、安全邊界與執行流程</h2>
  <div class="warn">🟢 <b>刪除流程（對應 2026-11-23 實際做法）</b>：① 剔除 C 檔／鎖定項／父子重疊子項／設定排除項 → ② 寫入完整 manifest → ③ &lt;100 MB 小項做 ZIP 備份 → ④ 每批最多 10 項、Python 直接刪除（使用中檔案自動略過） → ⑤ 逐項複核 → ⑥ 同資料來源對比空間 → ⑦ 寫執行紀錄。<br>
- 🔵 <b>特殊動作</b>：Explorer 只刪 thumbcache_*.db；回收站內容依設定走 SHEmptyRecycleBinW，目錄本身不刪；他人 SID 的回收站殘留只回報、不清除。<br>
+ 🟢 <b>多磁碟</b>：勾選可以跨碟，執行時按磁碟分組、逐碟刪除；每顆碟各有自己的 manifest、備份與逐項紀錄，合計結果另存一份。<br>
+ 🔵 <b>特殊動作</b>：Explorer 只刪 thumbcache_*.db；回收站內容依設定走 SHEmptyRecycleBinW（只清本碟）；他人 SID 的回收站殘留只回報、不清除。<br>
  🔴 <b>不可逆</b>：本工具直接刪除、不主動移入回收站；但部分環境（非系統碟、第三方檔案篩選）仍可能被系統留一份在該碟回收站，實際殘留以「回收站殘留」為準。觀測淨增受其他程式寫入影響，與帳面目標值分開呈現。</div>
 </section>
 
 <footer>cdisk-guard · 純本機 Python stdlib 產生 · 運行期零模型呼叫 · 掃描檔案數與耗時見頁首 KPI</footer>
 </div>
 
-<div class="mask" id="mask"><div class="modal">
+<div class="mask" id="mask"><div class="modal" id="modalBox">
  <div class="mh" id="mh">⚠️ 執行刪除確認</div>
  <div class="mb" id="mb"></div>
  <div class="mf" id="mf"></div>
@@ -174,11 +194,11 @@ footer{margin-top:44px;padding-top:16px;border-top:1px solid var(--line);color:v
 
 <script>
 const DATA = __DATA__;
-const DISK = __DISK__;
+const DISK = __DISK__;              // 合計容量（所有已分析磁碟）
 const META = __META__;
 const API = __API__;
-const DRIVE = __DRIVE__;
-const DRIVES = __DRIVES__;
+const DRIVES = __DRIVES__;          // 已分析的磁碟（含容量與掃描資訊）
+const AVAILABLE = META.available || DRIVES;
 const TOKEN = '__TOKEN__';
 const TIER_LABEL = {'A':'A 檔 · 放心刪','B':'B 檔 · 需確認','C':'C 檔 · 禁止刪'};
 const TIER_ORDER = {'A':0,'B':1,'C':2};
@@ -186,6 +206,7 @@ const GROUPS = ['root','users','useritem','junk','appdata','big'];
 const byId = Object.fromEntries(DATA.map(x=>[x.id,x]));
 let picked = new Set(DATA.filter(x=>x.default).map(x=>x.id));
 let sortMode = 'tier';
+let driveFilter = 'ALL';
 
 function fmt(mb){
   if(mb >= 1024) return (mb/1024).toFixed(2)+' GB';
@@ -200,36 +221,43 @@ function sortList(list){
   else a.sort((x,y)=> (TIER_ORDER[x.tier]-TIER_ORDER[y.tier]) || (y.mb-x.mb));
   return a;
 }
+function visible(){ return driveFilter==='ALL' ? DATA : DATA.filter(x=>x.letter===driveFilter); }
 function selectedItems(){ return DATA.filter(x=>picked.has(x.id)); }
 // 實際可釋放：扣除「子項已含於父項」與「依設定排除」兩類，與後端 validate_targets 一致
 function effectiveMB(sel){ return sel.filter(x=>!x.nested_in && !x.excluded).reduce((s,x)=>s+x.mb,0); }
+function scopeText(){ return DRIVES.map(d=>d.letter+':').join('、') || '—'; }
 
 function renderKPI(){
+  const T = META.totals || DISK;
   const gross = DATA.filter(x=>x.tier==='A' && !x.locked && !x.excluded).reduce((s,x)=>s+x.mb,0);
   const effA = effectiveMB(DATA.filter(x=>x.tier==='A' && x.selectable && !x.excluded));
+  const tight = T.tightest;
   const cards = [
-    ['磁碟總容量', DISK.total_gb+' GB', 'GetDiskFreeSpaceExW'],
-    ['已使用', DISK.used_gb+' GB', '含所有系統與使用者資料'],
-    ['剩餘可用', DISK.free_gb+' GB', '門檻 '+META.threshold_pct+'% ＝ '+(DISK.total_gb*META.threshold_pct/100).toFixed(2)+' GB'],
-    ['剩餘比例', DISK.free_pct+'%', DISK.free_pct < META.threshold_pct ? '⚠ 已低於門檻' : '高於門檻'],
+    ['磁碟總容量', T.total_gb+' GB', DRIVES.length+' 顆磁碟合計'],
+    ['已使用', T.used_gb+' GB', '含所有系統與使用者資料'],
+    ['剩餘可用', T.free_gb+' GB', '門檻 '+META.threshold_pct+'%'],
+    ['剩餘比例', T.free_pct+'%',
+      tight ? (tight.letter+': 最緊張（'+tight.free_pct+'%）') : '—'],
     ['A 檔實際可釋放', fmt(effA), '帳面 '+fmt(gross)+'（含父子重疊，此處已扣除）'],
-    ['掃描檔案數', META.files_seen.toLocaleString(), META.elapsed_sec+'s'+(META.truncated?'（已達時間上限）':'')],
+    ['掃描檔案數', (T.files_seen||0).toLocaleString(), T.elapsed_sec+'s'+(T.truncated?'（有碟達時間上限）':'')],
   ];
   document.getElementById('kpis').innerHTML = cards.map(c=>
     '<div class="kpi"><div class="k">'+esc(c[0])+'</div><div class="v">'+esc(c[1])+'</div><div class="h">'+esc(c[2])+'</div></div>').join('');
-  const used = 100 - DISK.free_pct;
+  const used = 100 - T.free_pct;
   const bar = document.getElementById('diskbar');
-  bar.classList.toggle('low', DISK.free_pct < META.threshold_pct);
+  bar.classList.toggle('low', T.free_pct < META.threshold_pct);
   bar.firstElementChild.style.width = used.toFixed(1)+'%';
   document.getElementById('diskhint').textContent =
-    '已用 '+used.toFixed(2)+'% ／ 剩餘 '+DISK.free_pct+'%　｜　取樣時間 '+esc(DISK.checked_at);
+    '合計已用 '+used.toFixed(2)+'% ／ 剩餘 '+T.free_pct+'%　｜　'
+    + DRIVES.map(d=>d.letter+': '+(d.ok?d.free_gb.toFixed(2)+' GB（'+d.free_pct+'%）':'讀不到')).join('　｜　')
+    + '　｜　取樣 '+esc((DRIVES[0]||{}).checked_at || '');
   document.getElementById('modehint').textContent = API
     ? '本機後端模式：可真刪除（127.0.0.1）'
     : '離線唯讀模式：刪除需以 serve 啟動本機後端';
 }
 
 function tableHTML(list){
-  if(!list.length) return '<div class="desc">（無資料）</div>';
+  if(!list.length) return '<div class="desc">（此區目前沒有符合的項目）</div>';
   const th = '<tr><th></th><th>檔位</th><th>名稱</th><th>完整路徑</th><th>說明</th><th style="text-align:right">佔用</th></tr>';
   const rows = list.map(x=>{
     const on = picked.has(x.id);
@@ -240,18 +268,22 @@ function tableHTML(list){
     return '<tr>'
       + '<td class="ck"><input type="checkbox" data-id="'+x.id+'"'+(on?' checked':'')+(dis?' disabled':'')+'></td>'
       + '<td><span class="tier t'+x.tier+'">'+esc(TIER_LABEL[x.tier])+'</span></td>'
-      + '<td class="nm">'+esc(x.name)+tags+'</td>'
+      + '<td class="nm"><span class="tag drv">'+esc(x.letter)+':</span>'+esc(x.name)+tags+'</td>'
       + '<td class="path">'+esc(x.path)+'</td>'
       + '<td class="note">'+esc(x.note)+'</td>'
       + '<td class="sz">'+fmt(x.mb)+'</td></tr>';
   }).join('');
-  return '<table>'+th+rows+'</table>';
+  return '<div class="tw"><table>'+th+rows+'</table></div>';
 }
 
 function renderTables(){
+  const vis = visible();
   GROUPS.forEach(g=>{
+    const list = sortList(vis.filter(x=>x.group===g));
     const el = document.getElementById('t-'+g);
-    if(el) el.innerHTML = tableHTML(sortList(DATA.filter(x=>x.group===g)));
+    if(el) el.innerHTML = tableHTML(list);
+    const c = document.getElementById('c-'+g);
+    if(c) c.textContent = '（'+list.length+' 項 · '+fmt(list.reduce((s,x)=>s+x.mb,0))+'）';
   });
   document.querySelectorAll('input[type=checkbox][data-id]').forEach(cb=>{
     cb.onchange = ()=>{ cb.checked ? picked.add(cb.dataset.id) : picked.delete(cb.dataset.id); updateStat(); };
@@ -262,8 +294,10 @@ function updateStat(){
   const sel = selectedItems();
   const gross = sel.reduce((s,x)=>s+x.mb,0);
   const eff = effectiveMB(sel);
+  const letters = [...new Set(sel.map(x=>x.letter))].sort();
   document.getElementById('stat').innerHTML =
-    '已選 <b>'+sel.length+'</b> 項 ｜ 帳面 <b>'+fmt(gross)+'</b> ｜ 實際可釋放 <b>'+fmt(eff)+'</b>';
+    '已選 <b>'+sel.length+'</b> 項'+(letters.length?'（'+letters.join('、')+'）':'')
+    +' ｜ 帳面 <b>'+fmt(gross)+'</b> ｜ 實際可釋放 <b>'+fmt(eff)+'</b>';
   const b = document.getElementById('btn-delete');
   b.disabled = !API || sel.length===0;
   b.textContent = API ? '執行刪除' : '執行刪除（需 serve 模式）';
@@ -290,41 +324,90 @@ document.getElementById('btn-all').onclick = ()=>setPicked(x=>x.selectable && !x
 document.getElementById('btn-a').onclick = ()=>setPicked(x=>x.selectable && x.tier==='A' && !x.excluded);
 document.getElementById('btn-default').onclick = ()=>setPicked(x=>x.default);
 document.getElementById('btn-none').onclick = ()=>setPicked(()=>false);
-document.getElementById('btn-rescan').onclick = async ()=>{
-  if(!API) return;
-  const btn = document.getElementById('btn-rescan');
-  btn.disabled = true; btn.textContent = '掃描中…';
-  try{
-    const r = await fetch('/api/rescan',{method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({token:TOKEN, drive:DRIVE})});
-    const j = await r.json();
-    if(j.ok) location.reload();
-    else { btn.disabled=false; btn.textContent='重新掃描'; alert('重新掃描失敗：'+(j.error||'')); }
-  }catch(e){ btn.disabled=false; btn.textContent='重新掃描'; alert('重新掃描失敗：'+e); }
-};
 
-function closeModal(){ document.getElementById('mask').classList.remove('show'); }
-function showModal(title, body, footer){
+function closeModal(){
+  document.getElementById('mask').classList.remove('show');
+  document.getElementById('modalBox').classList.remove('plain');
+}
+function showModal(title, body, footer, plain){
   document.getElementById('mh').innerHTML = title;
   document.getElementById('mb').innerHTML = body;
   document.getElementById('mf').innerHTML = footer;
+  document.getElementById('modalBox').classList.toggle('plain', !!plain);
   document.getElementById('mask').classList.add('show');
   return document.getElementById('mf');
 }
 
+// ---------------- 掃描：先選磁碟（預設全選） ----------------
+function openPicker(){
+  if(!API) return;
+  const list = AVAILABLE.filter(d=>d.ok);
+  const body = '<div class="desc">勾選要分析的磁碟。<b>預設全部勾選</b>；分析完成後會合成同一份報告，'
+    + '清理時也可以跨碟勾選。</div><div class="pick" id="picklist">'
+    + AVAILABLE.map(d=>{
+        const ok = d.ok;
+        return '<label class="'+(ok?'':'off')+'"><input type="checkbox" data-drive="'+esc(d.drive)+'"'
+          + (ok?' checked':' disabled')+'><span class="nm2">'+esc(d.letter)+':</span>'
+          + '<span>'+esc(ok?('剩 '+d.free_gb.toFixed(1)+'／'+d.total_gb.toFixed(0)+' GB（'+d.free_pct.toFixed(1)+'%）'):(d.error||'讀不到'))
+          + '</span><span class="meta2">'+(d.scanned?'上次已分析':'尚未分析')+'</span></label>';
+      }).join('')
+    + '</div>';
+  const mf = showModal('選擇要分析／清理的磁碟', body,
+    '<button id="p-cancel" class="ghost">取消</button>'
+    + '<button id="p-go" class="primary" style="background:#1c3a5e;border-color:var(--pri)">開始分析</button>', true);
+  mf.querySelector('#p-cancel').onclick = closeModal;
+  mf.querySelector('#p-go').onclick = async ()=>{
+    const picks = [...document.querySelectorAll('#picklist input[data-drive]:checked')].map(x=>x.dataset.drive);
+    if(!picks.length){ alert('請至少選一顆磁碟'); return; }
+    const body2 = document.getElementById('mb'), foot2 = document.getElementById('mf');
+    body2.innerHTML = '<div class="notice"><span class="spin"></span> <b>正在分析 '+picks.map(p=>p.slice(0,2)).join('、')+'</b>'
+      + '，請勿關閉本頁。整顆碟可能要 1–5 分鐘。</div>'
+      + '<div class="desc">分析期間桌寵仍在監控；完成後本頁會自動更新成綜合報告。</div>';
+    foot2.innerHTML = '';
+    try{
+      const r = await fetch('/api/scan',{method:'POST',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({token:TOKEN, drives:picks})});
+      const j = await r.json();
+      if(j.ok){ location.reload(); return; }
+      throw new Error(j.error || ('HTTP '+r.status));
+    }catch(e){
+      body2.innerHTML = '<div class="danger">分析失敗：'+esc(e.message||e)+'</div>';
+      foot2.innerHTML = '<button id="p-back" class="ghost">返回</button>';
+      foot2.querySelector('#p-back').onclick = closeModal;
+    }
+  };
+}
+
+document.getElementById('btn-rescan').onclick = ()=>{
+  if(!API) return;
+  openPicker();
+};
+
+// ---------------- 刪除 ----------------
 document.getElementById('btn-delete').onclick = ()=>{
   const sel = selectedItems();
   if(!sel.length || !API) return;
   const gross = sel.reduce((s,x)=>s+x.mb,0);
   const eff = effectiveMB(sel);
+  const by = {};
+  sel.forEach(x=>{ (by[x.letter] = by[x.letter] || []).push(x); });
+  const letters = Object.keys(by).sort();
   let h = '<div class="danger"><b>⚠️ 此操作非常危險，可能導致不可逆的數據丟失！</b><br>'
     + '以下 <b>'+sel.length+'</b> 個項目、帳面 <b>'+fmt(gross)+'</b>（扣除父子重疊後約 <b>'+fmt(eff)+'</b>）將被<b>直接刪除（本工具不主動移入回收站）</b>。'
     + '請逐項核對完整路徑。</div>';
+  if(letters.length > 1){
+    h += '<div class="warn">這次跨 <b>'+letters.length+'</b> 顆磁碟（'+letters.join('、')+'）：會<b>逐碟</b>執行，'
+       + '每顆碟各有自己的 manifest、備份與紀錄；合計結果另存一份。</div>';
+  }
   h += '<div class="warn">刪除前會自動建立 manifest 與 &lt;100 MB 小項 ZIP 備份；'
      + '使用中／被鎖定的檔案會略過並記入執行紀錄；C 檔與鎖定項由後端再次拒絕。</div>';
-  h += '<ul>'+sel.map(x=>'<li><span class="tier t'+x.tier+'">'+esc(x.tier)+'</span> '
-     + '<code>'+esc(x.path)+'</code> — '+fmt(x.mb)
-     + (x.nested_in?'（子項，後端會自動剔除）':'')+'</li>').join('')+'</ul>';
+  letters.forEach(L=>{
+    const items = by[L];
+    h += '<div class="result"><b>'+esc(L)+':</b> '+items.length+' 項，帳面 '+fmt(items.reduce((s,x)=>s+x.mb,0))
+      + '<ul>'+items.map(x=>'<li><span class="tier t'+x.tier+'">'+esc(x.tier)+'</span> '
+      + '<code>'+esc(x.path)+'</code> — '+fmt(x.mb)
+      + (x.nested_in?'（子項，後端會自動剔除）':'')+'</li>').join('')+'</ul></div>';
+  });
   const mf = showModal('⚠️ 執行刪除確認', h,
     '<button id="m-cancel" class="ghost">取消</button>'
     + '<button id="m-go" class="primary">我已瞭解，確認執行刪除</button>');
@@ -342,7 +425,7 @@ document.getElementById('btn-delete').onclick = ()=>{
     const poll = async ()=>{
       if(stopped) return;
       try{
-        const pr = await fetch('/api/progress?drive='+encodeURIComponent(DRIVE),{cache:'no-store'});
+        const pr = await fetch('/api/progress',{cache:'no-store'});
         const pj = await pr.json();
         const p = pj.progress || {};
         const done = p.done||0, total = p.total||0;
@@ -350,7 +433,9 @@ document.getElementById('btn-delete').onclick = ()=>{
         const bar = document.getElementById('pg-bar');
         if(bar) bar.style.width = pct+'%';
         const t = document.getElementById('pg-txt');
-        if(t) t.innerHTML = '<b>'+done+' / '+(total||'?')+'</b>（'+pct+'%）｜已移除 '
+        const where = p.drive && p.drive_count>1
+          ? '（'+(p.drive_index||1)+'/'+(p.drive_count||1)+' 碟：'+p.drive+':）' : '';
+        if(t) t.innerHTML = '<b>'+done+' / '+(total||'?')+'</b>（'+pct+'%）'+where+'｜已移除 '
           + (p.removed||0)+' 項、殘留 '+(p.remaining||0)+' 項'
           + (pj.running ? '' : '｜<b>收尾中…</b>');
         const c = document.getElementById('pg-cur');
@@ -361,7 +446,7 @@ document.getElementById('btn-delete').onclick = ()=>{
     poll();
     try{
       const r = await fetch('/api/delete',{method:'POST',headers:{'Content-Type':'application/json'},
-        body:JSON.stringify({token:TOKEN, drive:DRIVE, confirm:true, paths:sel.map(x=>x.path)})});
+        body:JSON.stringify({token:TOKEN, confirm:true, paths:sel.map(x=>x.path)})});
       const j = await r.json();
       stopped = true;
       showResult(j);
@@ -379,26 +464,36 @@ function showResult(j){
   h += '<div class="result"><table><tr><th>項目</th><th>數值</th></tr>'
     + [['要求項目', j.requested],['實際執行', j.target_count],
        ['剔除', (j.rejected||[]).length],['完全移除', j.fully_removed],
-       ['部分殘留', j.partial],['刪除前剩餘', fmt(j.free_before_mb)],
-       ['刪除後剩餘', fmt(j.free_after_mb)],['觀測淨增', fmt(j.observed_gain_mb)],
+       ['部分殘留', j.partial],['刪除前剩餘（合計）', fmt(j.free_before_mb)],
+       ['刪除後剩餘（合計）', fmt(j.free_after_mb)],['觀測淨增', fmt(j.observed_gain_mb)],
        ['帳面目標', fmt(j.target_mb)],['實際可釋放', fmt(j.effective_mb)]]
       .map(r=>'<tr><td>'+esc(r[0])+'</td><td class="sz">'+esc(r[1])+'</td></tr>').join('')
     + '</table></div>';
-  h += '<div class="warn">'+esc(j.gain_note||'')+'<br>manifest：<code>'+esc(j.manifest||'')+'</code><br>'
-     + '備份：<code>'+esc((j.backup||{}).path||((j.backup||{}).skipped_reason?'（未備份）':'—'))+'</code><br>'
-     + ((j.backup||{}).skipped_reason
-        ? '<span style="color:#f0d9a8">⚠ '+esc(j.backup.skipped_reason)+'</span><br>' : '')
-     + '紀錄：<code>'+esc(j.log_path||'')+'</code></div>';
-  if((j.recycle_bin_residual||[]).length){
+  if((j.per_drive||[]).length){
+    h += '<div class="result"><b>逐碟結果</b><table><tr><th>磁碟</th><th>狀態</th><th>執行</th>'
+      + '<th>完全移除</th><th>殘留</th><th>實際可釋放</th><th>觀測淨增</th></tr>'
+      + j.per_drive.map(d=>'<tr><td><b>'+esc(d.letter)+':</b></td><td>'+esc(d.status)+'</td><td>'
+        +esc(d.target_count||0)+'</td><td>'+esc(d.fully_removed||0)+'</td><td>'
+        +esc(d.partial||0)+'</td><td class="sz">'+fmt(d.effective_mb||0)+'</td><td class="sz">'
+        +fmt(d.observed_gain_mb||0)+'</td></tr>').join('')
+      + '</table></div>';
+  }
+  h += '<div class="warn">'+esc(j.gain_note||'')
+    + '<br>manifest：'+(j.manifests||[j.manifest]).filter(Boolean).map(x=>'<code>'+esc(x)+'</code>').join('<br>')
+    + ((j.backups||[]).length ? '<br>備份：'+j.backups.map(x=>'<code>'+esc(x)+'</code>').join('<br>') : '')
+    + ((j.logs||[j.log_path]).filter(Boolean).length
+        ? '<br>紀錄：'+(j.logs||[j.log_path]).filter(Boolean).map(x=>'<code>'+esc(x)+'</code>').join('<br>') : '')
+    + '</div>';
+  const residual = (j.per_drive||[]).flatMap(d=>(d.recycle_bin_residual||[]).map(r=>({letter:d.letter, ...r})));
+  if(residual.length){
     h += '<div class="warn"><b>回收站殘留（依 SID，未自動清除）</b><ul>'
-      + j.recycle_bin_residual.map(r=>'<li><code>'+esc(r.sid)+'</code>：'+r.files+' 檔 / '+fmt(r.mb)+'</li>').join('')
+      + residual.map(r=>'<li><b>'+esc(r.letter)+':</b> <code>'+esc(r.sid)+'</code>：'+r.files+' 檔 / '+fmt(r.mb)+'</li>').join('')
       + '</ul></div>';
   }
-  if((j.outcomes||[]).length){
-    h += '<div class="result"><b>逐項複核</b><table><tr><th>動作</th><th>刪除後仍存在</th><th>殘留項目數</th><th>完整路徑</th></tr>'
-      + j.outcomes.map(o=>'<tr><td>'+esc(o.action)+'</td><td>'+esc(o.after)+'</td><td>'
-        +esc(o.remaining)+'</td><td class="path">'+esc(o.path)+'</td></tr>').join('')
-      + '</table></div>';
+  if((j.rejected||[]).length){
+    h += '<div class="warn"><b>被剔除的項目（'+j.rejected.length+'）</b><ul>'
+      + j.rejected.slice(0,40).map(r=>'<li><code>'+esc(r.path)+'</code> — '+esc(r.reason)+'</li>').join('')
+      + '</ul>'+(j.rejected.length>40?'<div class="desc">…另有 '+(j.rejected.length-40)+' 項</div>':'')+'</div>';
   }
   const mf = showModal('執行結果', h,
     '<button id="m-close" class="ghost">關閉結果</button>'
@@ -437,46 +532,59 @@ function renderLastRun(){
   const a = el.querySelector('#lnk-last');
   if(a) a.onclick = (ev)=>{
     ev.preventDefault();
-    const mf2 = showModal('上次執行紀錄',
-      '<div class="result"><table><tr><th>項目</th><th>數值</th></tr>'
+    const pd = (L.per_drive||[]);
+    const body = '<div class="result"><table><tr><th>項目</th><th>數值</th></tr>'
       + [['狀態', L.status],['開始', L.created],['執行項數', L.target_count],
          ['完整移除', L.fully_removed],['殘留', L.partial],
          ['實際可釋放', fmt(L.effective_mb||0)],['觀測淨增', fmt(L.observed_gain_mb||0)],
          ['執行後剩餘比例', (L.free_pct!=null?L.free_pct+'%':'—')]]
         .map(r=>'<tr><td>'+esc(r[0])+'</td><td class="sz">'+esc(r[1])+'</td></tr>').join('')
       + '</table></div>'
-      + '<div class="warn">manifest：<code>'+esc(L.manifest||'—')+'</code><br>'
-      + '紀錄：<code>'+esc(L.log_path||'—')+'</code></div>',
-      '<button id="m-lc" class="ghost">關閉</button>');
+      + (pd.length ? '<div class="result"><b>逐碟</b><table><tr><th>磁碟</th><th>狀態</th><th>執行</th><th>可釋放</th></tr>'
+         + pd.map(d=>'<tr><td><b>'+esc(d.letter)+':</b></td><td>'+esc(d.status)+'</td><td>'
+           + esc(d.target_count||0)+'</td><td class="sz">'+fmt(d.effective_mb||0)+'</td></tr>').join('')
+         + '</table></div>' : '')
+      + '<div class="warn">manifest：'+((L.manifests||[L.manifest]).filter(Boolean).map(x=>'<code>'+esc(x)+'</code>').join('<br>')||'—')
+      + '<br>紀錄：'+((L.logs||[L.log_path]).filter(Boolean).map(x=>'<code>'+esc(x)+'</code>').join('<br>')||'—')+'</div>';
+    const mf2 = showModal('上次執行紀錄', body, '<button id="m-lc" class="ghost">關閉</button>', true);
     mf2.querySelector('#m-lc').onclick = closeModal;
   };
   return false;
 }
 
-// 多碟切換：只有一顆碟時整排隱藏，不佔版面。
-// 離線靜態報告＝連到同目錄下的另一顆碟的檔案；本機後端＝帶 ?drive= 重載。
-function renderDrives(){
-  const box = document.getElementById('drives');
-  if(!DRIVES || DRIVES.length < 2){ return; }
+// 碟別篩選：只影響「看哪一顆」，不影響勾選與排序。
+// 單碟時整排隱藏，版面與舊版相同。
+function renderChips(){
+  const box = document.getElementById('chips');
+  // 先算「有碟沒被分析」——這在只分析過一顆碟時最需要提醒，
+  // 所以不能放在 DRIVES.length<2 的提早返回之後。
+  const missing = AVAILABLE.filter(d=>d.ok && !d.scanned);
+  document.getElementById('missing').innerHTML = missing.length
+    ? '<div class="warn">尚有 <b>'+missing.length+'</b> 顆磁碟未分析：'
+      + missing.map(d=>'<b>'+esc(d.letter)+':</b>').join('、')
+      + '。按「選擇磁碟並重新分析」把它們加進這份報告（會合成同一頁）。</div>'
+    : '';
+  if(!DRIVES.length || DRIVES.length < 2){ return; }
   box.classList.add('on');
-  box.innerHTML = DRIVES.map(d=>{
-    const tag = esc(d.letter) + ':';
-    const txt = d.ok
-      ? tag + ' ' + d.free_gb.toFixed(1) + '／' + d.total_gb.toFixed(0) + ' GB（' + d.free_pct.toFixed(1) + '%）'
-      : tag + ' 讀不到';
-    if(d.current){
-      return '<span class="cur" title="目前顯示的磁碟">' + txt + '</span>';
-    }
-    if(!d.ok){ return '<span class="bad" title="' + esc(d.error||'') + '">' + txt + '</span>'; }
-    const href = API
-      ? ('?drive=' + encodeURIComponent(d.drive))
-      : encodeURIComponent(d.report).replace(/%2F/g, '/');
-    return '<a href="' + href + '" title="切換到 ' + esc(d.drive) + '">' + txt + '</a>';
+  const all = '<span class="chip'+(driveFilter==='ALL'?' on':'')+'" data-f="ALL">全部（'+DRIVES.length+' 顆）</span>';
+  const one = DRIVES.map(d=>{
+    const txt = d.letter+': '+(d.ok
+      ? d.free_gb.toFixed(1)+'／'+d.total_gb.toFixed(0)+' GB（'+d.free_pct.toFixed(1)+'%）'
+      : '讀不到');
+    return '<span class="chip'+(driveFilter===d.letter?' on':'')+(d.ok?'':' bad')+'" data-f="'+esc(d.letter)+'" title="只看 '+esc(d.drive)+'">'+esc(txt)+'</span>';
   }).join('');
+  box.innerHTML = all + one;
+  box.querySelectorAll('.chip').forEach(c=>{
+    c.onclick = ()=>{
+      if(c.classList.contains('bad')) return;
+      driveFilter = c.dataset.f;
+      renderChips(); renderTables();
+    };
+  });
 }
 
 renderKPI();
-renderDrives();
+renderChips();
 renderLastRun();
 renderTables();
 updateStat();
@@ -488,6 +596,11 @@ if(!API){
     + '即可使用真正的「執行刪除」。';
   document.getElementById('btn-close').disabled = true;
   document.getElementById('btn-rescan').disabled = true;
+}
+// ?pick=1：桌寵在多碟機器按下「立即背景分析」時帶進來，直接開選單（預設全選）
+// 沒有任何掃描結果時也自動開：先請使用者選磁碟，不要顯示一份空報告。
+if(API && (new URLSearchParams(location.search).get('pick')==='1' || !DRIVES.length)){
+  setTimeout(openPicker, 60);
 }
 </script>
 </body>
