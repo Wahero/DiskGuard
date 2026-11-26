@@ -12,184 +12,332 @@
 }
 *{box-sizing:border-box}
 body{margin:0;background:var(--bg);color:var(--tx);
- font:14px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft JhengHei","PingFang TC",sans-serif}
+ font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft JhengHei","PingFang TC",sans-serif}
 a{color:var(--pri);text-decoration:none}
-.wrap{max-width:1400px;margin:0 auto;padding:20px 18px 80px}
-header{padding:24px 0 12px;border-bottom:1px solid var(--line);margin-bottom:18px}
-h1{font-size:24px;margin:0 0 6px;letter-spacing:.5px}
-.sub{color:var(--tx2);font-size:13px}
-.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:12px;margin:16px 0 22px}
-.kpi{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:14px 16px}
-.kpi .k{color:var(--tx2);font-size:12px;letter-spacing:.5px}
-.kpi .v{font-size:22px;font-weight:650;margin-top:4px;font-variant-numeric:tabular-nums}
-.kpi .h{color:var(--tx3);font-size:11px;margin-top:2px}
-.bar{height:10px;border-radius:6px;background:#22303d;overflow:hidden;margin:10px 0 4px}
+code{font-family:Consolas,"Courier New",monospace;font-size:11.5px;color:#a5d6ff;
+ background:#0c131a;padding:1px 5px;border-radius:4px;word-break:break-all}
+.wrap{max-width:1200px;margin:0 auto;padding:14px 16px 40px}
+
+/* ---------- 首屏：結論擠在一頁 ---------- */
+.hero{border:1px solid var(--line);border-radius:12px;padding:13px 18px 12px;
+ background:linear-gradient(180deg,#141c26,#111820)}
+.h1line{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap}
+h1{font-size:18px;margin:0;letter-spacing:.3px}
+.scan{margin-left:auto;font-size:11.5px;color:var(--tx3);font-variant-numeric:tabular-nums}
+.mchip{font-size:11px;padding:2px 8px;border-radius:20px;border:1px solid var(--line);color:var(--tx3);white-space:nowrap}
+.mchip.live{color:#7ee787;border-color:#2f6b3c}
+.verdict{display:grid;grid-template-columns:repeat(4,1fr);margin-top:11px;
+ border-top:1px solid var(--line);padding-top:10px}
+.vitem{padding:0 16px;border-left:1px solid var(--line);min-width:0}
+.vitem:first-child{padding-left:0;border-left:none}
+.vk{font-size:11px;color:var(--tx3);letter-spacing:.3px;white-space:nowrap}
+.vv{font-size:20px;font-weight:650;margin-top:1px;font-variant-numeric:tabular-nums;
+ white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.vv.alert{color:#ff9b95}
+.vv.ok{color:#7ee787}
+.vs{font-size:11px;color:var(--tx3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.bar{height:6px;border-radius:4px;background:#22303d;overflow:hidden;margin:11px 0 0}
 .bar>i{display:block;height:100%;background:linear-gradient(90deg,#58a6ff,#d29922)}
 .bar.low>i{background:linear-gradient(90deg,#f85149,#d29922)}
-.notice{background:#1d2a1f;border:1px solid #2f5b38;border-left:4px solid var(--a);
- border-radius:8px;padding:12px 16px;margin:14px 0;font-size:13px;color:#c8e6cc}
-.warn{background:#2a1f14;border:1px solid #6b4d18;border-left:4px solid var(--b);
- border-radius:8px;padding:12px 16px;margin:14px 0;font-size:13px;color:#f0d9a8}
-.danger{background:#2a1618;border:1px solid #6b2626;border-left:4px solid var(--c);
- border-radius:8px;padding:12px 16px;margin:14px 0;font-size:13px;color:#ffc9c9}
-.toolbar{position:sticky;top:0;z-index:20;background:rgba(13,17,23,.96);
- backdrop-filter:blur(8px);border:1px solid var(--line);border-radius:10px;
- padding:12px 14px;margin:16px 0 22px;display:flex;flex-wrap:wrap;gap:10px;align-items:center}
-button{font:inherit;cursor:pointer;border-radius:7px;border:1px solid var(--line);
- background:var(--card2);color:var(--tx);padding:7px 13px;transition:.15s}
-button:hover:not(:disabled){border-color:var(--pri);color:var(--pri)}
-button:disabled{opacity:.45;cursor:not-allowed}
-button.on{background:#1c3a5e;border-color:var(--pri);color:#cfe4ff}
-button.primary{background:var(--danger);border-color:#f85149;color:#fff;font-weight:600}
-button.primary:hover:not(:disabled){background:#f85149;color:#fff;border-color:#ff7b72}
-button.ghost{background:transparent}
-.stat{margin-left:auto;color:var(--tx2);font-size:13px;font-variant-numeric:tabular-nums}
-.stat b{color:var(--a);font-size:16px}
-section{margin:30px 0}
-h2{font-size:18px;margin:0 0 4px;padding-bottom:8px;border-bottom:1px solid var(--line)}
-h2 .cnt{font-size:12px;font-weight:400;color:var(--tx3);margin-left:8px}
-.desc{color:var(--tx2);font-size:12.5px;margin:8px 0 14px}
-table{width:100%;border-collapse:collapse;background:var(--card);
- border:1px solid var(--line);border-radius:10px;overflow:hidden;font-size:13px}
-th{background:var(--card2);color:var(--tx2);text-align:left;font-weight:600;
- padding:10px 12px;font-size:12px;letter-spacing:.3px;white-space:nowrap}
-td{padding:9px 12px;border-top:1px solid #212c38;vertical-align:top}
-tr:hover td{background:#1b2530}
-td.ck{width:38px;text-align:center;padding-top:10px}
-input[type=checkbox]{width:17px;height:17px;accent-color:var(--a);cursor:pointer}
-input[type=checkbox]:disabled{cursor:not-allowed;opacity:.35}
-.tier{display:inline-block;padding:2px 8px;border-radius:5px;font-size:11px;
- font-weight:650;white-space:nowrap;border:1px solid}
-.tA{color:#7ee787;background:#12261a;border-color:#2f6b3c}
-.tB{color:#f0cc6b;background:#2a2210;border-color:#6b5518}
-.tC{color:#ff9b95;background:#2a1618;border-color:#6b2626}
-.nm{font-weight:600;word-break:break-word}
-.path{color:var(--tx3);font-size:11.5px;word-break:break-all;font-family:Consolas,"Courier New",monospace}
-.sz{text-align:right;white-space:nowrap;font-variant-numeric:tabular-nums;font-weight:600}
-/* 表格自己橫向捲，不要讓整頁被撐寬（手機上原本會把右側「佔用」推出畫面） */
-.tw{overflow-x:auto;-webkit-overflow-scrolling:touch;border-radius:10px}
-.note{color:var(--tx2);font-size:12px;max-width:430px}
-.tag{display:inline-block;font-size:10px;padding:1px 6px;border-radius:4px;
- border:1px solid var(--line);color:var(--tx3);margin-left:6px}
-.tag.def{color:#7ee787;border-color:#2f6b3c}
-.tag.skip{color:#f0cc6b;border-color:#6b5518}
-.tag.drv{color:#cfe4ff;border-color:#2f5378;background:#132132;margin:0 6px 0 0;font-weight:600}
-.nav{display:flex;flex-wrap:wrap;gap:8px;margin:10px 0 0}
-.nav a{font-size:12px;padding:5px 10px;background:var(--card);border:1px solid var(--line);border-radius:20px}
-.chips{display:none;flex-wrap:wrap;gap:8px;margin:12px 0 0}
+.dhint{margin-top:7px;font-size:11.5px;color:var(--tx3);font-variant-numeric:tabular-nums}
+.dhint b{color:var(--tx2);font-weight:600}
+.dhint span{white-space:nowrap}   /* 數字不要被拆到兩行 */
+.warnline{margin-top:9px;font-size:12px;color:#f0d9a8;display:flex;gap:10px;flex-wrap:wrap;align-items:baseline}
+.warnline b{color:#ffd98a}
+.warnline a{font-size:12px;white-space:nowrap}
+
+/* ---------- 碟別 chips（單碟時整排隱藏） ---------- */
+.chips{display:none;flex-wrap:wrap;gap:7px;margin:11px 0 0}
 .chips.on{display:flex}
-.chip{font-size:12px;padding:5px 11px;border-radius:20px;background:var(--card);
+.chip{font-size:11.5px;padding:3px 10px;border-radius:20px;background:var(--card);
  border:1px solid var(--line);color:var(--tx2);font-variant-numeric:tabular-nums;cursor:pointer}
 .chip:hover{border-color:var(--pri)}
 .chip.on{background:#1c3a5e;border-color:var(--pri);color:#cfe4ff;font-weight:600}
 .chip.bad{opacity:.45;cursor:not-allowed}
-.chip .lock{color:var(--tx3);font-size:11px}
-footer{margin-top:44px;padding-top:16px;border-top:1px solid var(--line);color:var(--tx3);font-size:12px}
+#missing:empty{display:none}
+#missing{margin-top:9px}
+.miss{background:#2a1f14;border:1px solid #6b4d18;border-left:4px solid var(--b);border-radius:8px;
+ padding:8px 12px;font-size:12px;color:#f0d9a8}
+
+/* ---------- 工具列 ---------- */
+.toolbar{position:sticky;top:0;z-index:30;margin:12px -16px 2px;padding:9px 16px;
+ display:flex;gap:8px;align-items:center;flex-wrap:wrap;
+ background:rgba(13,17,23,.95);backdrop-filter:blur(10px);border-bottom:1px solid var(--line)}
+.lb{font-size:11.5px;color:var(--tx3);white-space:nowrap}
+button{font:inherit;cursor:pointer;border-radius:7px;border:1px solid var(--line);
+ background:var(--card2);color:var(--tx);padding:6px 11px;font-size:12.5px;transition:.15s}
+button:hover:not(:disabled){border-color:var(--pri);color:var(--pri)}
+button:disabled{opacity:.42;cursor:not-allowed}
+button.primary{background:#b62324;border-color:#e5484d;color:#fff;font-weight:600}
+button.primary:hover:not(:disabled){background:#e5484d;color:#fff;border-color:#ff7b72}
+button.ghost{background:transparent}
+button.on{background:#1c3a5e;border-color:var(--pri);color:#cfe4ff}
+.seg{display:flex;border:1px solid var(--line);border-radius:8px;overflow:hidden;background:var(--card2)}
+.seg button{border:0;border-radius:0;background:transparent;padding:6px 10px;color:var(--tx2)}
+.seg button+button{border-left:1px solid var(--line)}
+.seg button.on{background:#1c3a5e;color:#cfe4ff}
+.sep{width:1px;height:20px;background:var(--line)}
+input[type=search]{font:inherit;font-size:12.5px;background:var(--card2);border:1px solid var(--line);
+ color:var(--tx);border-radius:7px;padding:6px 10px;width:160px;outline:none}
+input[type=search]:focus{border-color:var(--pri)}
+.stat{margin-left:auto;font-size:12px;color:var(--tx2);font-variant-numeric:tabular-nums;white-space:nowrap}
+.stat b{color:var(--a);font-size:13.5px}
+.right{margin-left:auto;display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.right .stat{margin-left:0}
+
+/* ---------- 分類：第一層只有小計 ---------- */
+.grp{border:1px solid var(--line);border-radius:10px;background:var(--card);margin:7px 0;overflow:hidden}
+.grp.open{border-color:#33455a}
+.ghead{display:grid;grid-template-columns:16px 24px minmax(150px,1fr) auto auto auto;
+ grid-template-areas:"caret cb title count sum save";
+ align-items:center;gap:10px;padding:10px 14px;cursor:pointer;user-select:none}
+.caret{grid-area:caret;justify-self:start;align-self:center;width:0;height:0;
+ border-left:5px solid var(--tx2);border-top:4px solid transparent;border-bottom:4px solid transparent;
+ margin-left:3px;transition:transform .14s}
+.ghead>input[type=checkbox]{grid-area:cb}
+.gtitle{grid-area:title;font-size:14.5px;font-weight:650;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.gcount{grid-area:count;font-size:12px;color:var(--tx3);font-variant-numeric:tabular-nums;
+ white-space:nowrap;min-width:52px;text-align:right}
+.gsum{grid-area:sum;font-size:12.5px;color:var(--tx3);white-space:nowrap;
+ font-variant-numeric:tabular-nums;min-width:136px;text-align:right}
+.gsum b{color:var(--tx);font-weight:650;font-size:13.5px;margin-left:3px}
+.gsave{grid-area:save;font-size:12.5px;color:var(--tx3);white-space:nowrap;font-variant-numeric:tabular-nums;
+ min-width:112px;text-align:right}
+.gsave b{color:var(--a);font-weight:650;font-size:13.5px;margin-left:3px}
+.gsave.zero b{color:var(--tx3);font-weight:500}
+.ghead:hover{background:var(--card2)}
+.grp.open .caret{transform:rotate(90deg)}
+.grp.empty .ghead{opacity:.45;cursor:default}
+.grp.empty .caret{visibility:hidden}
+.grp.empty .gsave b{color:var(--tx3);font-weight:500}
+input[type=checkbox]{width:16px;height:16px;accent-color:var(--a);cursor:pointer;margin:0;vertical-align:middle}
+input[type=checkbox]:disabled{cursor:not-allowed;opacity:.3}
+
+/* ---------- 展開後的明細 ---------- */
+.gbody{display:none;border-top:1px solid var(--line)}
+.grp.open .gbody{display:block}
+.gdesc{padding:8px 14px;font-size:11.5px;color:var(--tx3);border-bottom:1px solid #212c38;
+ display:flex;gap:10px;flex-wrap:wrap}
+.gdesc .common{color:var(--tx3);opacity:.9}
+table{width:100%;border-collapse:collapse;font-size:13px}
+.gbody table{table-layout:fixed}   /* 固定列寬，表頭與內容才會嚴格對齊 */
+th{background:#131a22;color:var(--tx3);text-align:left;font-weight:600;padding:7px 12px;
+ font-size:11px;letter-spacing:.3px;white-space:nowrap}
+td{padding:7px 12px;border-top:1px solid #1e2833;vertical-align:top}
+tr:hover td{background:#1a2330}
+td.ck{width:34px;text-align:center;padding-top:9px}
+td.td-tier{width:66px}
+td.td-size{width:92px;text-align:right;white-space:nowrap;font-variant-numeric:tabular-nums;font-weight:650}
+.tier{display:inline-block;padding:1px 7px;border-radius:5px;font-size:10.5px;font-weight:700;
+ border:1px solid;white-space:nowrap}
+.tA{color:#7ee787;background:#12261a;border-color:#2f6b3c}
+.tB{color:#f0cc6b;background:#2a2210;border-color:#6b5518}
+.tC{color:#ff9b95;background:#2a1618;border-color:#6b2626}
+.nm{font-weight:600;word-break:break-word}
+.path{color:var(--tx3);font-size:11px;word-break:break-all;font-family:Consolas,"Courier New",monospace}
+.note{color:var(--tx2);font-size:11.5px;margin-top:2px;display:-webkit-box;-webkit-line-clamp:2;
+ -webkit-box-orient:vertical;overflow:hidden}
+.tag{display:inline-block;font-size:9.5px;padding:0 5px;border-radius:4px;border:1px solid var(--line);
+ color:var(--tx3);margin-left:6px;font-weight:500;vertical-align:1px}
+.tag.def{color:#7ee787;border-color:#2f6b3c}
+.tag.skip{color:#f0cc6b;border-color:#6b5518}
+.tag.drv{color:#cfe4ff;border-color:#2f5378;background:#132132;margin:0 6px 0 0;font-weight:600}
+.nodata{padding:18px;color:var(--tx3);font-size:12.5px}
+.tw{overflow-x:auto;-webkit-overflow-scrolling:touch}
+
+/* ---------- 頁尾：備註與細節 ---------- */
+.notes{margin-top:26px;border-top:1px solid var(--line);padding-top:12px}
+.ntitle{font-size:13px;color:var(--tx2);font-weight:650;margin:0 0 8px;display:flex;
+ align-items:center;gap:8px;flex-wrap:wrap}
+.ntitle span{color:var(--tx3);font-weight:400;font-size:11.5px}
+details{border:1px solid var(--line);border-radius:9px;background:var(--card);margin:7px 0}
+summary{padding:10px 14px;cursor:pointer;font-weight:600;font-size:13px;list-style:none;
+ display:flex;align-items:center;gap:9px}
+summary::-webkit-details-marker{display:none}
+summary::before{content:"\25B8";color:var(--tx3);font-size:10px;transition:transform .14s}
+details[open] summary::before{transform:rotate(90deg)}
+summary .sm{margin-left:auto;font-weight:400;font-size:11.5px;color:var(--tx3);white-space:nowrap}
+.dbody{padding:0 14px 13px;font-size:12.5px;color:var(--tx2);line-height:1.8}
+.dbody b{color:var(--tx)}
+.dbody p{margin:7px 0}
+.dbody ul{padding-left:18px;margin:6px 0}
+.dbody li{margin:3px 0}
+.dbody table{margin-top:8px;border:1px solid var(--line);border-radius:7px}
+.dbody th,.dbody td{padding:6px 10px;font-size:12px}
+.pill-a{color:#7ee787}.pill-b{color:#f0cc6b}.pill-c{color:#ff9b95}
+.foot{margin-top:14px;color:var(--tx3);font-size:11.5px}
+
+/* ---------- 彈窗 ---------- */
 .mask{position:fixed;inset:0;background:rgba(0,0,0,.78);z-index:100;display:none;
  align-items:center;justify-content:center;padding:18px}
 .mask.show{display:flex}
-.modal{background:var(--card);border:1px solid #6b2626;border-radius:12px;
- width:min(820px,100%);max-height:88vh;display:flex;flex-direction:column}
+.modal{background:var(--card);border:1px solid #6b2626;border-radius:12px;width:min(820px,100%);
+ max-height:88vh;display:flex;flex-direction:column}
 .modal.plain{border-color:var(--line)}
-.mh{padding:16px 20px;border-bottom:1px solid var(--line);font-size:17px;font-weight:650;color:#ff9b95}
+.mh{padding:15px 18px;border-bottom:1px solid var(--line);font-size:16px;font-weight:650;color:#ff9b95}
 .modal.plain .mh{color:var(--tx)}
-.mb{padding:16px 20px;overflow:auto;font-size:13px}
-.mb ul{padding-left:20px;margin:10px 0}
-.mb li{margin:5px 0;word-break:break-all}
-.mf{padding:14px 20px;border-top:1px solid var(--line);display:flex;gap:10px;justify-content:flex-end;flex-wrap:wrap}
-.result{margin-top:14px;border:1px solid var(--line);border-radius:8px;padding:12px 16px;background:var(--bg2)}
-.result table{margin-top:10px}
+.mb{padding:14px 18px;overflow:auto;font-size:13px}
+.mb ul{padding-left:18px;margin:8px 0}
+.mb li{margin:4px 0;word-break:break-all;font-size:12.5px}
+.mf{padding:12px 18px;border-top:1px solid var(--line);display:flex;gap:9px;justify-content:flex-end;flex-wrap:wrap}
+.dangerbox{background:#2a1618;border:1px solid #6b2626;border-left:4px solid var(--c);
+ border-radius:8px;padding:11px 14px;margin-bottom:10px;color:#ffc9c9;font-size:12.5px}
+.warnbox{background:#2a1f14;border:1px solid #6b4d18;border-left:4px solid var(--b);
+ border-radius:8px;padding:11px 14px;margin-bottom:10px;color:#f0d9a8;font-size:12.5px}
+.okbox{background:#1d2a1f;border:1px solid #2f5b38;border-left:4px solid var(--a);
+ border-radius:8px;padding:11px 14px;margin-bottom:10px;color:#c8e6cc;font-size:12.5px}
+.result{margin-top:12px;border:1px solid var(--line);border-radius:8px;padding:11px 14px;background:var(--bg2)}
+.result table{margin-top:9px}
 .pick{display:flex;flex-direction:column;gap:8px;margin:12px 0}
 .pick label{display:flex;align-items:center;gap:10px;padding:10px 12px;border:1px solid var(--line);
  border-radius:8px;background:var(--bg2);cursor:pointer}
 .pick label:hover{border-color:var(--pri)}
 .pick .nm2{font-weight:600;font-variant-numeric:tabular-nums}
-.pick .meta2{color:var(--tx3);font-size:12px;margin-left:auto;font-variant-numeric:tabular-nums}
+.pick .meta2{color:var(--tx3);font-size:12px;margin-left:auto;font-variant-numeric:tabular-nums;white-space:nowrap}
 .pick label.off{opacity:.45;cursor:not-allowed}
 .spin{display:inline-block;width:14px;height:14px;border:2px solid #2a3644;
  border-top-color:var(--pri);border-radius:50%;animation:sp .8s linear infinite;vertical-align:-2px}
 @keyframes sp{to{transform:rotate(360deg)}}
-@media(max-width:760px){
- .wrap{padding:14px 10px 70px}
- h1{font-size:19px}
+
+@media(max-width:820px){
+ .wrap{padding:10px 10px 30px}
+ .toolbar{margin:10px -10px 2px;padding:8px 10px}
+ .verdict{grid-template-columns:1fr 1fr;gap:10px 0}
+ .vitem{padding:0 10px}
+ .vitem:nth-child(3){padding-left:0;border-left:none}
+ .vv{font-size:17px}
+ .vs{white-space:normal}
+ .scan{margin-left:0;width:100%}
  .stat{margin-left:0;width:100%}
- table{font-size:12px}
- th:nth-child(5),td:nth-child(5){display:none}
- .note{max-width:none}
- .tw table{min-width:620px}
- .toolbar{gap:7px;padding:10px}
- button{padding:6px 10px;font-size:12px}
+ .right{margin-left:0;width:100%}
+ .ghead{grid-template-columns:16px 24px minmax(70px,1fr) auto;
+  grid-template-areas:"caret cb title count" "sum sum sum save";gap:5px 9px;padding:9px 11px}
+ .gsum{padding-left:40px;font-size:11.5px}
+ .gsave{min-width:auto;text-align:right;font-size:11.5px}
+ .gsum b,.gsave b{font-size:12.5px}
+ .gtitle{font-size:13.5px}
+ input[type=search]{width:100%}
+ .tw{overflow-x:visible}
+ th,td{padding:6px 8px}
+ td.td-tier{width:58px}
+ td.td-size{width:74px;font-size:12px}
+ .note{-webkit-line-clamp:3}
 }
 </style>
 </head>
 <body>
 <div class="wrap">
-<header>
-  <h1>磁碟清理清單 · 三檔分級</h1>
-  <div class="sub">掃描 __NOW__ ｜ 範圍 <b>__SCOPE_TEXT__</b> ｜ 一份報告包含所有已分析磁碟（單次遍歷、跳過 junction） ｜ <b id="modehint"></b></div>
-  <div class="chips" id="chips"></div>
-  <div class="nav">
-    <a href="#s-root">▸ 根目錄</a><a href="#s-users">▸ 各用戶佔用</a>
-    <a href="#s-useritem">▸ 用戶目錄明細</a><a href="#s-junk">▸ 已知垃圾點</a>
-    <a href="#s-appdata">▸ AppData 細項</a><a href="#s-big">▸ 大檔案</a>
-    <a href="#s-rule">▸ 安全邊界</a>
+
+  <!-- 首屏：所有結論擠在一頁 -->
+  <header class="hero">
+    <div class="h1line">
+      <h1>磁碟清理清單</h1>
+      <span class="mchip" id="modehint"></span>
+      <span class="scan" id="scanline"></span>
+    </div>
+    <div class="verdict" id="verdict"></div>
+    <div class="bar" id="diskbar"><i style="width:0%"></i></div>
+    <div class="dhint" id="diskhint"></div>
+    <div class="chips" id="chips"></div>
+    <div id="missing"></div>
+    <div class="warnline" id="warnline">
+      <span>⚠️ <b>刪除不進回收站、不可復原</b>　執行前會先逐項列出完整路徑，再一次確認。</span>
+      <a href="#notes">必讀說明 ↓</a>
+    </div>
+  </header>
+
+  <!-- 工具列：排序／篩選只作用在明細，不影響收合狀態 -->
+  <div class="toolbar">
+    <span class="lb">排序</span>
+    <div class="seg" id="sortseg">
+      <button data-sort="tier" class="on">安全度</button>
+      <button data-sort="size">佔用大小</button>
+    </div>
+    <span class="sep"></span>
+    <span class="lb">篩選</span>
+    <div class="seg" id="tierseg">
+      <button data-tier="all" class="on">全部</button>
+      <button data-tier="A">A</button>
+      <button data-tier="B">B</button>
+      <button data-tier="C">C</button>
+    </div>
+    <button id="btn-only" class="ghost">只看可刪</button>
+    <button id="btn-reset" class="ghost">恢復預設</button>
+    <input type="search" id="q" placeholder="搜尋名稱／路徑…">
+    <span class="sep"></span>
+    <button id="btn-open" class="ghost">全部展開</button>
+    <button id="btn-close-all" class="ghost">全部收合</button>
+    <span class="sep"></span>
+    <button id="btn-rescan" class="ghost">選擇磁碟並重新分析</button>
+    <span class="right">
+      <span class="stat" id="stat"></span>
+      <button id="btn-delete" class="primary">執行刪除</button>
+      <button id="btn-close" class="ghost">B. 人工處理／關閉</button>
+    </span>
   </div>
-</header>
 
-<div class="grid" id="kpis"></div>
-<div class="bar" id="diskbar"><i style="width:0%"></i></div>
-<div class="sub" id="diskhint"></div>
-<div id="lastrun" style="display:none"></div>
-<div id="missing"></div>
+  <main id="groups"></main>
 
-<div class="notice">✅ <b>安全度分級：</b>A 檔＝臨時檔／快取／安裝包殘留，可放心刪；B 檔＝軟體資料或自建目錄，需你判斷；C 檔＝系統元件／個人資料／憑證，<b>checkbox 已鎖定，後端也會再次拒絕</b>。<b>預設已勾選所有 A 檔</b>（依設定排除的項目除外）。</div>
-<div class="danger" id="dangerbox">⚠️ <b>此操作非常危險，可能導致不可逆的數據丟失！</b> 本頁由只綁 127.0.0.1 的本機後端提供，按下「執行刪除」會先弹出確認視窗逐項列出完整路徑；再次確認後<b>直接刪除</b>勾選項目，本工具不主動移入回收站（部分環境下非系統碟仍可能被系統導向該碟回收站）。僅 &lt;100 MB 小項有 ZIP 備份可還原。</div>
+  <!-- 頁尾：說明、規則、附件 -->
+  <footer class="notes" id="notes">
+    <div class="ntitle">備註與細節 <span>按需要展開，不佔用首屏</span></div>
 
-<div class="toolbar">
-  <button id="btn-sort-tier" class="on">排序：安全度優先</button>
-  <button id="btn-sort-size">排序：佔用大小</button>
-  <button id="btn-all">全選（A＋B）</button>
-  <button id="btn-a">只選 A 檔</button>
-  <button id="btn-default">恢復預設勾選</button>
-  <button id="btn-none" class="ghost">取消全選</button>
-  <button id="btn-rescan" class="ghost">選擇磁碟並重新分析</button>
-  <span class="stat" id="stat"></span>
-  <button id="btn-delete" class="primary">執行刪除</button>
-  <button id="btn-close" class="ghost">B. 人工處理／關閉網頁</button>
-</div>
+    <details>
+      <summary>安全度分級（A／B／C 各代表什麼）<span class="sm">勾選規則</span></summary>
+      <div class="dbody">
+        <ul>
+          <li><b class="pill-a">A 檔</b>：臨時檔／快取／安裝包殘留 —— 可放心刪，<b>預設已勾選</b>（依設定排除者除外）。</li>
+          <li><b class="pill-b">B 檔</b>：軟體資料或自建目錄 —— 需你自行判斷，預設不勾。</li>
+          <li><b class="pill-c">C 檔</b>：系統元件／個人資料／憑證 —— checkbox 已鎖定，後端也會再次拒絕。</li>
+        </ul>
+        <p>分類只是輔助判斷，最終仍以你勾選的項目為準；後端在刪除前會再過一次白名單與層級檢查。</p>
+      </div>
+    </details>
 
-<section id="s-root"><h2>一、各磁碟根目錄<span class="cnt" id="c-root"></span></h2>
- <div class="desc">依佔用大小排列；系統元件（Windows、Program Files、pagefile.sys 等）歸 C 檔，禁止勾選。</div>
- <div id="t-root"></div></section>
-<section id="s-users"><h2>二、各用戶佔用<span class="cnt" id="c-users"></span></h2>
- <div class="desc">單次遍歷、排除 reparse point，與其他區塊同一資料來源，不會出現兩套口徑。使用者設定檔總目錄不可整刪。</div>
- <div id="t-users"></div></section>
-<section id="s-useritem"><h2>三、各用戶目錄明細<span class="cnt" id="c-useritem"></span></h2>
- <div class="desc">逐用戶列出第一層目錄內容與佔用；個人文件與憑證目錄一律鎖定。</div>
- <div id="t-useritem"></div></section>
-<section id="s-junk"><h2>四、已知垃圾點<span class="cnt" id="c-junk"></span></h2>
- <div class="desc">系統與應用程式快取、暫存、更新包；A 檔為主要回收來源。</div>
- <div id="t-junk"></div></section>
-<section id="s-appdata"><h2>五、AppData 細項<span class="cnt" id="c-appdata"></span></h2>
- <div class="desc">Local／Roaming 第一層子目錄，以及 Temp 下的大型子項。</div>
- <div id="t-appdata"></div></section>
-<section id="s-big"><h2>六、大檔案 TOP<span class="cnt" id="c-big"></span></h2>
- <div class="desc">大於設定門檻的單一檔案；安裝包／壓縮檔歸 B 檔，請自行判斷。</div>
- <div id="t-big"></div></section>
-<section id="s-rule"><h2>七、安全邊界與執行流程</h2>
- <div class="warn">🟢 <b>刪除流程（對應 2026-11-23 實際做法）</b>：① 剔除 C 檔／鎖定項／父子重疊子項／設定排除項 → ② 寫入完整 manifest → ③ &lt;100 MB 小項做 ZIP 備份 → ④ 每批最多 10 項、Python 直接刪除（使用中檔案自動略過） → ⑤ 逐項複核 → ⑥ 同資料來源對比空間 → ⑦ 寫執行紀錄。<br>
- 🟢 <b>多磁碟</b>：勾選可以跨碟，執行時按磁碟分組、逐碟刪除；每顆碟各有自己的 manifest、備份與逐項紀錄，合計結果另存一份。<br>
- 🔵 <b>特殊動作</b>：Explorer 只刪 thumbcache_*.db；回收站內容依設定走 SHEmptyRecycleBinW（只清本碟）；他人 SID 的回收站殘留只回報、不清除。<br>
- 🔴 <b>不可逆</b>：本工具直接刪除、不主動移入回收站；但部分環境（非系統碟、第三方檔案篩選）仍可能被系統留一份在該碟回收站，實際殘留以「回收站殘留」為準。觀測淨增受其他程式寫入影響，與帳面目標值分開呈現。</div>
-</section>
+    <details>
+      <summary>七、安全邊界與執行流程<span class="sm">不可逆</span></summary>
+      <div class="dbody">
+        <p><b>執行順序</b>：① 剔除 C 檔／鎖定項／父子重疊子項／設定排除項 → ② 寫入完整 manifest →
+        ③ &lt;100 MB 小項做 ZIP 備份 → ④ 每批最多 10 項、直接刪除（使用中檔案自動略過） →
+        ⑤ 逐項複核 → ⑥ 同資料來源對比空間 → ⑦ 寫執行紀錄。</p>
+        <p><b>多磁碟</b>：勾選可以跨碟，執行時按磁碟分組、逐碟刪除；每顆碟各有自己的 manifest、備份與逐項紀錄，合計結果另存一份。</p>
+        <p><b>特殊動作</b>：Explorer 只刪 <code>thumbcache_*.db</code>；回收站依設定走
+        <code>SHEmptyRecycleBinW</code>（只清本碟），目錄本身不刪；他人 SID 的回收站殘留只回報、不清除。</p>
+        <p><b>不可逆</b>：本工具直接刪除、不主動移入回收站；但部分環境（非系統碟、第三方檔案篩選）仍可能被系統留一份在該碟回收站，
+        實際殘留以「回收站殘留」為準。觀測淨增受其他程式寫入影響，與帳面目標值分開呈現。</p>
+        <p>本頁由只綁 <code>127.0.0.1</code> 的本機後端提供，一次性 token，閒置 600 秒自動關閉；不含任何外部請求。</p>
+      </div>
+    </details>
 
-<footer>cdisk-guard · 純本機 Python stdlib 產生 · 運行期零模型呼叫 · 掃描檔案數與耗時見頁首 KPI</footer>
+    <details id="lastrun-details">
+      <summary>上次執行紀錄<span class="sm" id="lastrun-sm"></span></summary>
+      <div class="dbody" id="lastrun-body"></div>
+    </details>
+
+    <details>
+      <summary>附件與檔案位置<span class="sm">manifest／備份／日誌</span></summary>
+      <div class="dbody" id="attach-body"></div>
+    </details>
+
+    <details>
+      <summary>口徑與資料來源<span class="sm">為什麼數字和別處不一樣</span></summary>
+      <div class="dbody">
+        <p>單次 BFS 遍歷、跳過 reparse point（junction／symlink），所有區塊共用同一份資料，不出現兩套口徑。
+        範圍：<b>__SCOPE_TEXT__</b>；單一報告包含所有已分析磁碟。</p>
+        <p>「合計」是該分類全部項目的帳面總和；「可刪」已扣除<b>父子重疊</b>與<b>依設定排除</b>的項目，
+        與後端 <code>validate_targets</code> 的算法一致，因此會小於合計。</p>
+        <p>掃描檔案數與耗時見頁首；若顯示「已達時間上限」，表示本次為截斷快掃，數字僅供參考。</p>
+      </div>
+    </details>
+
+    <div class="foot">cdisk-guard · 純本機 Python stdlib 產生 · 運行期零模型呼叫</div>
+  </footer>
 </div>
 
 <div class="mask" id="mask"><div class="modal" id="modalBox">
- <div class="mh" id="mh">⚠️ 執行刪除確認</div>
- <div class="mb" id="mb"></div>
- <div class="mf" id="mf"></div>
+  <div class="mh" id="mh">⚠️ 執行刪除確認</div>
+  <div class="mb" id="mb"></div>
+  <div class="mf" id="mf"></div>
 </div></div>
 
 <script>
@@ -200,131 +348,277 @@ const API = __API__;
 const DRIVES = __DRIVES__;          // 已分析的磁碟（含容量與掃描資訊）
 const AVAILABLE = META.available || DRIVES;
 const TOKEN = '__TOKEN__';
-const TIER_LABEL = {'A':'A 檔 · 放心刪','B':'B 檔 · 需確認','C':'C 檔 · 禁止刪'};
+const NOW = '__NOW__';
+
+const TIER_LABEL = {'A':'A 檔','B':'B 檔','C':'C 檔'};
+const TIER_HINT = {'A':'臨時檔／快取／安裝包殘留，可放心刪',
+                   'B':'軟體資料或自建目錄，需你判斷',
+                   'C':'系統元件／個人資料／憑證，禁止刪'};
 const TIER_ORDER = {'A':0,'B':1,'C':2};
-const GROUPS = ['root','users','useritem','junk','appdata','big'];
-const byId = Object.fromEntries(DATA.map(x=>[x.id,x]));
-let picked = new Set(DATA.filter(x=>x.default).map(x=>x.id));
-let sortMode = 'tier';
-let driveFilter = 'ALL';
 
-function fmt(mb){
-  if(mb >= 1024) return (mb/1024).toFixed(2)+' GB';
-  return mb.toFixed(1)+' MB';
-}
-function esc(s){
-  return String(s==null?'':s).replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-}
-function sortList(list){
-  const a = list.slice();
-  if(sortMode === 'size') a.sort((x,y)=>y.mb-x.mb);
-  else a.sort((x,y)=> (TIER_ORDER[x.tier]-TIER_ORDER[y.tier]) || (y.mb-x.mb));
-  return a;
-}
-function visible(){ return driveFilter==='ALL' ? DATA : DATA.filter(x=>x.letter===driveFilter); }
-function selectedItems(){ return DATA.filter(x=>picked.has(x.id)); }
+const GROUPS = [
+  {id:'root',     no:'一', title:'各磁碟根目錄',   desc:'依佔用大小排列；系統元件（Windows、Program Files、pagefile.sys 等）歸 C 檔，禁止勾選。'},
+  {id:'users',    no:'二', title:'各用戶佔用',     desc:'單次遍歷、排除 reparse point，與其他區塊同一資料來源。使用者設定檔總目錄不可整刪。'},
+  {id:'useritem', no:'三', title:'各用戶目錄明細', desc:'逐用戶列出第一層目錄內容與佔用；個人文件與憑證目錄一律鎖定。'},
+  {id:'junk',     no:'四', title:'已知垃圾點',     desc:'系統與應用程式快取、暫存、更新包；A 檔為主要回收來源。'},
+  {id:'appdata',  no:'五', title:'AppData 細項',   desc:'Local／Roaming 第一層子目錄，以及 Temp 下的大型子項。'},
+  {id:'big',      no:'六', title:'大檔案 TOP',     desc:'大於設定門檻的單一檔案；安裝包／壓縮檔歸 B 檔，請自行判斷。'}
+];
+
+// 收合狀態獨立保存：篩選／排序／勾選／重繪都不會動它
+const state = {
+  open: new Set(),                                     // 預設全部收合
+  picked: new Set(DATA.filter(x=>x.default).map(x=>x.id)),
+  sort: 'tier',
+  tier: 'all',
+  only: false,
+  q: '',
+  drive: 'ALL'
+};
+
+const fmt = mb => (mb >= 1024 ? (mb/1024).toFixed(2)+' GB' : mb.toFixed(1)+' MB');
+const esc = s => String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const sumMB = a => a.reduce((s,x)=>s+x.mb,0);
 // 實際可釋放：扣除「子項已含於父項」與「依設定排除」兩類，與後端 validate_targets 一致
-function effectiveMB(sel){ return sel.filter(x=>!x.nested_in && !x.excluded).reduce((s,x)=>s+x.mb,0); }
-function scopeText(){ return DRIVES.map(d=>d.letter+':').join('、') || '—'; }
+const effMB = a => a.filter(x=>!x.nested_in && !x.excluded).reduce((s,x)=>s+x.mb,0);
+const isPickable = x => x.selectable && !x.excluded;
 
-function renderKPI(){
+function sortList(a){
+  const b = a.slice();
+  if(state.sort === 'size') b.sort((x,y)=>y.mb-x.mb);
+  else b.sort((x,y)=>(TIER_ORDER[x.tier]-TIER_ORDER[y.tier]) || (y.mb-x.mb));
+  return b;
+}
+function rowsOf(gid){
+  let a = DATA.filter(x=>x.group===gid);
+  if(state.drive !== 'ALL') a = a.filter(x=>x.letter===state.drive);
+  if(state.tier !== 'all') a = a.filter(x=>x.tier===state.tier);
+  if(state.only) a = a.filter(isPickable);
+  if(state.q){
+    const q = state.q.toLowerCase();
+    a = a.filter(x=>((x.name||'')+' '+(x.path||'')+' '+(x.note||'')).toLowerCase().includes(q));
+  }
+  return sortList(a);
+}
+const filtering = () => state.drive!=='ALL' || state.tier!=='all' || state.only || !!state.q;
+
+/* ---------------- 首屏 ---------------- */
+function renderHero(){
   const T = META.totals || DISK;
-  const gross = DATA.filter(x=>x.tier==='A' && !x.locked && !x.excluded).reduce((s,x)=>s+x.mb,0);
-  const effA = effectiveMB(DATA.filter(x=>x.tier==='A' && x.selectable && !x.excluded));
-  const tight = T.tightest;
+  const aPick = DATA.filter(x=>x.tier==='A' && isPickable(x));
+  const grossA = sumMB(aPick), effA = effMB(aPick);
+  const low = T.free_pct < META.threshold_pct;
+  const L = META.last_delete;
+  const sel = DATA.filter(x=>state.picked.has(x.id));
+  const stName = L ? ({EXECUTED:'全部完成',PARTIAL:'部分殘留',ABORTED:'被中斷'}[L.status]||L.status) : '—';
   const cards = [
-    ['磁碟總容量', T.total_gb+' GB', DRIVES.length+' 顆磁碟合計'],
-    ['已使用', T.used_gb+' GB', '含所有系統與使用者資料'],
-    ['剩餘可用', T.free_gb+' GB', '門檻 '+META.threshold_pct+'%'],
-    ['剩餘比例', T.free_pct+'%',
-      tight ? (tight.letter+': 最緊張（'+tight.free_pct+'%）') : '—'],
-    ['A 檔實際可釋放', fmt(effA), '帳面 '+fmt(gross)+'（含父子重疊，此處已扣除）'],
-    ['掃描檔案數', (T.files_seen||0).toLocaleString(), T.elapsed_sec+'s'+(T.truncated?'（有碟達時間上限）':'')],
+    ['剩餘可用', T.free_gb+' GB',
+      '合計 '+T.free_pct+'% · 門檻 '+META.threshold_pct+'%'+(T.tightest?' · '+T.tightest.letter+': 最緊張':''),
+      low?'alert':'ok'],
+    ['A 檔可釋放', fmt(effA), '已扣父子重疊 · 帳面 '+fmt(grossA), ''],
+    ['將要刪除', sel.length+' 項', '目前勾選 · 帳面 '+fmt(sumMB(sel)), ''],
+    ['上次執行', stName,
+      L ? (L.free_pct!=null?'執行後 '+L.free_pct+'%':'')+' · 淨增 '+fmt(L.observed_gain_mb||0) : '尚無紀錄', '']
   ];
-  document.getElementById('kpis').innerHTML = cards.map(c=>
-    '<div class="kpi"><div class="k">'+esc(c[0])+'</div><div class="v">'+esc(c[1])+'</div><div class="h">'+esc(c[2])+'</div></div>').join('');
-  const used = 100 - T.free_pct;
+  document.getElementById('verdict').innerHTML = cards.map(c=>
+    '<div class="vitem"><div class="vk">'+esc(c[0])+'</div>'
+    +'<div class="vv '+c[3]+'" title="'+esc(c[1])+'">'+esc(c[1])+'</div>'
+    +'<div class="vs">'+esc(c[2])+'</div></div>').join('');
+
   const bar = document.getElementById('diskbar');
-  bar.classList.toggle('low', T.free_pct < META.threshold_pct);
-  bar.firstElementChild.style.width = used.toFixed(1)+'%';
-  document.getElementById('diskhint').textContent =
-    '合計已用 '+used.toFixed(2)+'% ／ 剩餘 '+T.free_pct+'%　｜　'
-    + DRIVES.map(d=>d.letter+': '+(d.ok?d.free_gb.toFixed(2)+' GB（'+d.free_pct+'%）':'讀不到')).join('　｜　')
-    + '　｜　取樣 '+esc((DRIVES[0]||{}).checked_at || '');
-  document.getElementById('modehint').textContent = API
-    ? '本機後端模式：可真刪除（127.0.0.1）'
-    : '離線唯讀模式：刪除需以 serve 啟動本機後端';
+  bar.classList.toggle('low', low);
+  bar.firstElementChild.style.width = (100-T.free_pct).toFixed(1)+'%';
+
+  document.getElementById('diskhint').innerHTML =
+    '<span>合計 <b>'+esc(T.total_gb)+' GB</b></span> ｜ <span>已用 '+esc((100-T.free_pct).toFixed(2))+'%</span> ｜ '
+    + DRIVES.map(d=>'<span>'+esc(d.letter)+': '+(d.ok
+        ? esc(d.free_gb.toFixed(2))+' GB（'+esc(d.free_pct)+'%）' : '讀不到')+'</span>').join(' ｜ ');
+
+  document.getElementById('scanline').textContent =
+    '掃描 '+(T.created||NOW)+' ｜ '+(T.elapsed_sec||0)+'s ｜ '
+    + (T.files_seen||0).toLocaleString()+' 檔'+(T.truncated?'（已達時間上限）':'');
+
+  const m = document.getElementById('modehint');
+  m.textContent = API ? '本機後端 · 可執行刪除' : '離線唯讀 · 無法刪除';
+  m.className = 'mchip'+(API?' live':'');
 }
 
-function tableHTML(list){
-  if(!list.length) return '<div class="desc">（此區目前沒有符合的項目）</div>';
-  const th = '<tr><th></th><th>檔位</th><th>名稱</th><th>完整路徑</th><th>說明</th><th style="text-align:right">佔用</th></tr>';
-  const rows = list.map(x=>{
-    const on = picked.has(x.id);
-    const dis = !x.selectable;
-    const tags = (x.default?'<span class="tag def">預設勾選</span>':'')
-      + (x.excluded?'<span class="tag skip">依設定排除</span>':'')
-      + (x.nested_in?'<span class="tag skip">子項已含於父項</span>':'');
-    return '<tr>'
-      + '<td class="ck"><input type="checkbox" data-id="'+x.id+'"'+(on?' checked':'')+(dis?' disabled':'')+'></td>'
-      + '<td><span class="tier t'+x.tier+'">'+esc(TIER_LABEL[x.tier])+'</span></td>'
-      + '<td class="nm"><span class="tag drv">'+esc(x.letter)+':</span>'+esc(x.name)+tags+'</td>'
-      + '<td class="path">'+esc(x.path)+'</td>'
-      + '<td class="note">'+esc(x.note)+'</td>'
-      + '<td class="sz">'+fmt(x.mb)+'</td></tr>';
+/* ---------------- 分類 + 明細 ---------------- */
+function groupHead(g, all, vis){
+  const pick = vis.filter(isPickable);
+  const on = pick.filter(x=>state.picked.has(x.id)).length;
+  const tri = pick.length && on===pick.length ? 'all' : (on>0?'some':'none');
+  // 篩選中：小計跟着「目前看到的」走；未篩選：就是整類的小計
+  const src = filtering() ? vis : all;
+  const total = sumMB(src);
+  const canFree = effMB(src.filter(isPickable));
+  const sub = filtering()
+    ? '<span class="gcount">符合 '+vis.length+' ／ 共 '+all.length+' 項</span>'
+    : '<span class="gcount">'+all.length+' 項</span>';
+  return '<div class="ghead" data-g="'+g.id+'" tabindex="0" role="button">'
+    + '<span class="caret"></span>'
+    + '<input type="checkbox" data-gcb="'+g.id+'"'+(tri==='all'?' checked':'')+(tri==='some'?' data-indet="1"':'')
+    + (pick.length?'':' disabled')+' title="選取本類目前顯示的可刪項目">'
+    + '<span class="gtitle">'+esc(g.no+'、'+g.title)+'</span>'
+    + sub
+    + '<span class="gsum">'+(filtering()?'符合':'合計')+'<b>'+fmt(total)+'</b></span>'
+    + '<span class="gsave'+(canFree>0?'':' zero')+'" title="A＋B 可勾選項目，已扣父子重疊與設定排除">可刪<b>'+fmt(canFree)+'</b></span>'
+    + '</div>';
+}
+
+function rowHTML(x, common){
+  const on = state.picked.has(x.id);
+  const tags = (x.default?'<span class="tag def">預設勾選</span>':'')
+    + (x.excluded?'<span class="tag skip">依設定排除</span>':'')
+    + (x.nested_in?'<span class="tag skip">已含於父項</span>':'');
+  // 同一句說明在本類重複出現時已提到類說明，行內不再重複佔兩行
+  const note = (x.note && x.note !== common) ? '<div class="note">'+esc(x.note)+'</div>' : '';
+  return '<tr>'
+    + '<td class="ck"><input type="checkbox" data-id="'+esc(x.id)+'"'+(on?' checked':'')
+    + (x.selectable?'':' disabled')+'></td>'
+    + '<td class="td-tier"><span class="tier t'+x.tier+'" title="'+esc(TIER_HINT[x.tier])+'">'
+    + esc(TIER_LABEL[x.tier])+'</span></td>'
+    + '<td class="td-main"><div class="nm"><span class="tag drv">'+esc(x.letter)+':</span>'
+    + esc(x.name)+tags+'</div>'
+    + '<div class="path">'+esc(x.path)+'</div>'
+    + note + '</td>'
+    + '<td class="td-size">'+fmt(x.mb)+'</td></tr>';
+}
+
+// 找出本類「幾乎每項都一樣」的說明，提到類說明只講一次
+function commonNote(all){
+  const cnt = new Map();
+  all.forEach(x=>{ if(x.note) cnt.set(x.note, (cnt.get(x.note)||0)+1); });
+  let best = null, n = 0;
+  cnt.forEach((v,k)=>{ if(v > n){ n = v; best = k; } });
+  return (best && n >= 3 && n >= all.length * 0.4) ? best : null;
+}
+
+function groupBody(g, all, vis){
+  const pickable = all.filter(isPickable);
+  const common = commonNote(all);
+  const tk = ['A','B','C'].map(t=>{
+    const n = all.filter(x=>x.tier===t).length;
+    return n ? '<span class="t'+t+'">'+t+' '+n+'</span>' : '';
+  }).filter(Boolean).join(' · ');
+  let h = '<div class="gdesc"><span>'+esc(g.desc)+'</span>'
+        + '<span style="margin-left:auto">'+tk
+        + (pickable.length?'':'　｜　本類無可刪項目')+'</span>'
+        + (common ? '<span class="common" style="flex:1 1 100%">本類共通：'+esc(common)+'</span>' : '')
+        + '</div>';
+  if(!vis.length){
+    return h + '<div class="nodata">沒有符合目前篩選的項目。</div>';
+  }
+  h += '<table><colgroup><col style="width:36px"><col style="width:70px"><col>'
+     + '<col style="width:96px"></colgroup>'
+     + '<thead><tr><th></th><th>檔位</th><th>名稱／路徑</th>'
+     + '<th style="text-align:right">佔用</th></tr></thead><tbody>';
+  h += vis.map(x=>rowHTML(x, common)).join('');
+  return h + '</tbody></table>';
+}
+
+function bindHead(el, gid){
+  el.onclick = ev=>{
+    if(ev.target.closest('input')) return;              // 勾選不觸發展合
+    if(!rowsOf(gid).length) return;                     // 篩選後 0 項：不可展開
+    state.open.has(gid) ? state.open.delete(gid) : state.open.add(gid);
+    renderGroups();
+  };
+  el.onkeydown = ev=>{
+    if(ev.key==='Enter' || ev.key===' '){ ev.preventDefault(); el.click(); }
+  };
+  const cb = el.querySelector('[data-gcb]');
+  if(cb){
+    cb.onclick = ev=>ev.stopPropagation();
+    cb.onchange = ()=>{
+      const vis = rowsOf(gid).filter(isPickable);
+      if(cb.checked) vis.forEach(x=>state.picked.add(x.id));
+      else vis.forEach(x=>state.picked.delete(x.id));
+      renderGroups(); updateStat();                     // 只重繪資料，不動 state.open
+    };
+  }
+  const ind = el.querySelector('[data-indet="1"]');
+  if(ind) ind.indeterminate = true;
+}
+
+function renderGroups(){
+  document.getElementById('groups').innerHTML = GROUPS.map(g=>{
+    const all = DATA.filter(x=>x.group===g.id);
+    const vis = rowsOf(g.id);
+    return '<section class="grp'+(state.open.has(g.id)?' open':'')+(vis.length?'':' empty')+'" data-g="'+g.id+'">'
+      + groupHead(g, all, vis)
+      + '<div class="gbody">'+groupBody(g, all, vis)+'</div></section>';
   }).join('');
-  return '<div class="tw"><table>'+th+rows+'</table></div>';
+  document.querySelectorAll('.ghead').forEach(el=>bindHead(el, el.dataset.g));
+  document.querySelectorAll('input[data-id]').forEach(cb=>{
+    cb.onchange = ()=>{
+      cb.checked ? state.picked.add(cb.dataset.id) : state.picked.delete(cb.dataset.id);
+      updateStat(); refreshGroupHeads();                // 不整頁重繪，避免收合與捲動跳動
+    };
+  });
 }
 
-function renderTables(){
-  const vis = visible();
+// 單項勾選只更新組頭，不重建明細
+function refreshGroupHeads(){
   GROUPS.forEach(g=>{
-    const list = sortList(vis.filter(x=>x.group===g));
-    const el = document.getElementById('t-'+g);
-    if(el) el.innerHTML = tableHTML(list);
-    const c = document.getElementById('c-'+g);
-    if(c) c.textContent = '（'+list.length+' 項 · '+fmt(list.reduce((s,x)=>s+x.mb,0))+'）';
-  });
-  document.querySelectorAll('input[type=checkbox][data-id]').forEach(cb=>{
-    cb.onchange = ()=>{ cb.checked ? picked.add(cb.dataset.id) : picked.delete(cb.dataset.id); updateStat(); };
+    const sec = document.querySelector('.grp[data-g="'+g.id+'"]');
+    if(!sec) return;
+    const old = sec.querySelector('.ghead');
+    if(!old) return;
+    const tmp = document.createElement('div');
+    tmp.innerHTML = groupHead(g, DATA.filter(x=>x.group===g.id), rowsOf(g.id));
+    const nu = tmp.firstElementChild;
+    old.replaceWith(nu);
+    bindHead(nu, g.id);
   });
 }
 
+/* ---------------- 統計 / 工具列 ---------------- */
 function updateStat(){
-  const sel = selectedItems();
-  const gross = sel.reduce((s,x)=>s+x.mb,0);
-  const eff = effectiveMB(sel);
+  const sel = DATA.filter(x=>state.picked.has(x.id));
+  const eff = effMB(sel);
   const letters = [...new Set(sel.map(x=>x.letter))].sort();
   document.getElementById('stat').innerHTML =
     '已選 <b>'+sel.length+'</b> 項'+(letters.length?'（'+letters.join('、')+'）':'')
-    +' ｜ 帳面 <b>'+fmt(gross)+'</b> ｜ 實際可釋放 <b>'+fmt(eff)+'</b>';
+    +' ｜ 實際可釋放 <b>'+fmt(eff)+'</b>';
   const b = document.getElementById('btn-delete');
-  b.disabled = !API || sel.length===0;
-  b.textContent = API ? '執行刪除' : '執行刪除（需 serve 模式）';
+  b.disabled = !API || !sel.length;
+  b.textContent = sel.length ? '執行刪除（'+sel.length+'）' : '執行刪除';
+  renderHero();
 }
+function render(){ renderGroups(); updateStat(); }
 
-function setPicked(fn){
-  picked = new Set(DATA.filter(fn).map(x=>x.id));
-  renderTables(); updateStat();
-}
-
-document.getElementById('btn-sort-tier').onclick = ()=>{
-  sortMode='tier';
-  document.getElementById('btn-sort-tier').classList.add('on');
-  document.getElementById('btn-sort-size').classList.remove('on');
-  renderTables();
+document.querySelectorAll('#sortseg button').forEach(b=>{
+  b.onclick = ()=>{
+    document.querySelectorAll('#sortseg button').forEach(x=>x.classList.remove('on'));
+    b.classList.add('on'); state.sort = b.dataset.sort;
+    renderGroups();                                     // 排序不重置 state.open
+  };
+});
+document.querySelectorAll('#tierseg button').forEach(b=>{
+  b.onclick = ()=>{
+    document.querySelectorAll('#tierseg button').forEach(x=>x.classList.remove('on'));
+    b.classList.add('on'); state.tier = b.dataset.tier;
+    renderGroups();
+  };
+});
+document.getElementById('btn-only').onclick = ev=>{
+  state.only = !state.only;
+  ev.currentTarget.classList.toggle('on', state.only);
+  renderGroups();
 };
-document.getElementById('btn-sort-size').onclick = ()=>{
-  sortMode='size';
-  document.getElementById('btn-sort-size').classList.add('on');
-  document.getElementById('btn-sort-tier').classList.remove('on');
-  renderTables();
+document.getElementById('btn-reset').onclick = ()=>{
+  state.picked = new Set(DATA.filter(x=>x.default).map(x=>x.id));
+  render();
 };
-document.getElementById('btn-all').onclick = ()=>setPicked(x=>x.selectable && !x.excluded);
-document.getElementById('btn-a').onclick = ()=>setPicked(x=>x.selectable && x.tier==='A' && !x.excluded);
-document.getElementById('btn-default').onclick = ()=>setPicked(x=>x.default);
-document.getElementById('btn-none').onclick = ()=>setPicked(()=>false);
+document.getElementById('q').oninput = ev=>{ state.q = ev.target.value.trim(); renderGroups(); };
+document.getElementById('btn-open').onclick = ()=>{
+  GROUPS.forEach(g=>{ if(rowsOf(g.id).length) state.open.add(g.id); });
+  renderGroups();
+};
+document.getElementById('btn-close-all').onclick = ()=>{ state.open.clear(); renderGroups(); };
 
+/* ---------------- 彈窗 ---------------- */
 function closeModal(){
   document.getElementById('mask').classList.remove('show');
   document.getElementById('modalBox').classList.remove('plain');
@@ -338,12 +632,12 @@ function showModal(title, body, footer, plain){
   return document.getElementById('mf');
 }
 
-// ---------------- 掃描：先選磁碟（預設全選） ----------------
+/* ---------------- 掃描：先選磁碟（預設全選） ---------------- */
 function openPicker(){
   if(!API) return;
-  const list = AVAILABLE.filter(d=>d.ok);
-  const body = '<div class="desc">勾選要分析的磁碟。<b>預設全部勾選</b>；分析完成後會合成同一份報告，'
-    + '清理時也可以跨碟勾選。</div><div class="pick" id="picklist">'
+  const body = '<div style="color:var(--tx2);font-size:12.5px;margin-bottom:4px">勾選要分析的磁碟。'
+    + '<b>預設全部勾選</b>；分析完成後會合成同一份報告，清理時也可以跨碟勾選。</div>'
+    + '<div class="pick" id="picklist">'
     + AVAILABLE.map(d=>{
         const ok = d.ok;
         return '<label class="'+(ok?'':'off')+'"><input type="checkbox" data-drive="'+esc(d.drive)+'"'
@@ -360,9 +654,9 @@ function openPicker(){
     const picks = [...document.querySelectorAll('#picklist input[data-drive]:checked')].map(x=>x.dataset.drive);
     if(!picks.length){ alert('請至少選一顆磁碟'); return; }
     const body2 = document.getElementById('mb'), foot2 = document.getElementById('mf');
-    body2.innerHTML = '<div class="notice"><span class="spin"></span> <b>正在分析 '+picks.map(p=>p.slice(0,2)).join('、')+'</b>'
-      + '，請勿關閉本頁。整顆碟可能要 1–5 分鐘。</div>'
-      + '<div class="desc">分析期間桌寵仍在監控；完成後本頁會自動更新成綜合報告。</div>';
+    body2.innerHTML = '<div class="okbox"><span class="spin"></span> <b>正在分析 '
+      + picks.map(p=>p.slice(0,2)).join('、')+'</b>，請勿關閉本頁。整顆碟可能要 1–5 分鐘。</div>'
+      + '<div style="color:var(--tx2);font-size:12.5px">分析期間桌寵仍在監控；完成後本頁會自動更新成綜合報告。</div>';
     foot2.innerHTML = '';
     try{
       const r = await fetch('/api/scan',{method:'POST',headers:{'Content-Type':'application/json'},
@@ -371,39 +665,34 @@ function openPicker(){
       if(j.ok){ location.reload(); return; }
       throw new Error(j.error || ('HTTP '+r.status));
     }catch(e){
-      body2.innerHTML = '<div class="danger">分析失敗：'+esc(e.message||e)+'</div>';
+      body2.innerHTML = '<div class="dangerbox">分析失敗：'+esc(e.message||e)+'</div>';
       foot2.innerHTML = '<button id="p-back" class="ghost">返回</button>';
       foot2.querySelector('#p-back').onclick = closeModal;
     }
   };
 }
+document.getElementById('btn-rescan').onclick = ()=>{ if(API) openPicker(); };
 
-document.getElementById('btn-rescan').onclick = ()=>{
-  if(!API) return;
-  openPicker();
-};
-
-// ---------------- 刪除 ----------------
+/* ---------------- 刪除 ---------------- */
 document.getElementById('btn-delete').onclick = ()=>{
-  const sel = selectedItems();
+  const sel = DATA.filter(x=>state.picked.has(x.id));
   if(!sel.length || !API) return;
-  const gross = sel.reduce((s,x)=>s+x.mb,0);
-  const eff = effectiveMB(sel);
+  const gross = sumMB(sel), eff = effMB(sel);
   const by = {};
   sel.forEach(x=>{ (by[x.letter] = by[x.letter] || []).push(x); });
   const letters = Object.keys(by).sort();
-  let h = '<div class="danger"><b>⚠️ 此操作非常危險，可能導致不可逆的數據丟失！</b><br>'
-    + '以下 <b>'+sel.length+'</b> 個項目、帳面 <b>'+fmt(gross)+'</b>（扣除父子重疊後約 <b>'+fmt(eff)+'</b>）將被<b>直接刪除（本工具不主動移入回收站）</b>。'
-    + '請逐項核對完整路徑。</div>';
+  let h = '<div class="dangerbox"><b>⚠️ 此操作非常危險，可能導致不可逆的數據丟失！</b><br>'
+    + '以下 <b>'+sel.length+'</b> 項、帳面 <b>'+fmt(gross)+'</b>（扣除父子重疊後約 <b>'+fmt(eff)
+    + '</b>）將被<b>直接刪除，不經回收站</b>。請逐項核對完整路徑。</div>';
   if(letters.length > 1){
-    h += '<div class="warn">這次跨 <b>'+letters.length+'</b> 顆磁碟（'+letters.join('、')+'）：會<b>逐碟</b>執行，'
+    h += '<div class="warnbox">這次跨 <b>'+letters.length+'</b> 顆磁碟（'+letters.join('、')+'）：會<b>逐碟</b>執行，'
        + '每顆碟各有自己的 manifest、備份與紀錄；合計結果另存一份。</div>';
   }
-  h += '<div class="warn">刪除前會自動建立 manifest 與 &lt;100 MB 小項 ZIP 備份；'
+  h += '<div class="warnbox">刪除前會自動建立 manifest 與 &lt;100 MB 小項 ZIP 備份；'
      + '使用中／被鎖定的檔案會略過並記入執行紀錄；C 檔與鎖定項由後端再次拒絕。</div>';
   letters.forEach(L=>{
     const items = by[L];
-    h += '<div class="result"><b>'+esc(L)+':</b> '+items.length+' 項，帳面 '+fmt(items.reduce((s,x)=>s+x.mb,0))
+    h += '<div class="result"><b>'+esc(L)+':</b> '+items.length+' 項，帳面 '+fmt(sumMB(items))
       + '<ul>'+items.map(x=>'<li><span class="tier t'+x.tier+'">'+esc(x.tier)+'</span> '
       + '<code>'+esc(x.path)+'</code> — '+fmt(x.mb)
       + (x.nested_in?'（子項，後端會自動剔除）':'')+'</li>').join('')+'</ul></div>';
@@ -416,10 +705,10 @@ document.getElementById('btn-delete').onclick = ()=>{
     const go = mf.querySelector('#m-go');
     go.disabled = true; go.textContent = '執行中，請勿關閉…';
     const mb = document.getElementById('mb'), mfoot = document.getElementById('mf');
-    mb.innerHTML = '<div class="notice"><b>刪除執行中</b>，請勿關閉本頁。進度每 0.7 秒更新一次。</div>'
+    mb.innerHTML = '<div class="okbox"><b>刪除執行中</b>，請勿關閉本頁。進度每 0.7 秒更新一次。</div>'
       + '<div class="bar"><i id="pg-bar" style="width:0%"></i></div>'
-      + '<div class="sub" id="pg-txt">準備中…</div>'
-      + '<div class="sub" id="pg-cur" style="word-break:break-all"></div>';
+      + '<div style="color:var(--tx2);font-size:12.5px;margin-top:6px" id="pg-txt">準備中…</div>'
+      + '<div style="color:var(--tx3);font-size:11.5px;word-break:break-all" id="pg-cur"></div>';
     mfoot.innerHTML = '';
     let stopped = false;
     const poll = async ()=>{
@@ -435,8 +724,8 @@ document.getElementById('btn-delete').onclick = ()=>{
         const t = document.getElementById('pg-txt');
         const where = p.drive && p.drive_count>1
           ? '（'+(p.drive_index||1)+'/'+(p.drive_count||1)+' 碟：'+p.drive+':）' : '';
-        if(t) t.innerHTML = '<b>'+done+' / '+(total||'?')+'</b>（'+pct+'%）'+where+'｜已移除 '
-          + (p.removed||0)+' 項、殘留 '+(p.remaining||0)+' 項'
+        if(t) t.innerHTML = '<b>'+done+' / '+(total||'?')+'</b>（'+pct+'%）'+where
+          + '｜已移除 '+(p.removed||0)+' 項、殘留 '+(p.remaining||0)+' 項'
           + (pj.running ? '' : '｜<b>收尾中…</b>');
         const c = document.getElementById('pg-cur');
         if(c) c.textContent = p.current ? ('目前：'+p.current) : '';
@@ -452,33 +741,33 @@ document.getElementById('btn-delete').onclick = ()=>{
       showResult(j);
     }catch(e){
       stopped = true;
-      showModal('執行失敗', '<div class="danger">'+esc(e)+'</div>',
+      const mf2 = showModal('執行失敗', '<div class="dangerbox">'+esc(e)+'</div>',
         '<button id="m-cancel2" class="ghost">關閉</button>');
-      document.getElementById('m-cancel2').onclick = closeModal;
+      mf2.querySelector('#m-cancel2').onclick = closeModal;
     }
   };
 };
 
 function showResult(j){
-  let h = '<div class="notice"><b>✅ 刪除流程已完成</b>（'+esc(j.created)+'）</div>';
-  h += '<div class="result"><table><tr><th>項目</th><th>數值</th></tr>'
+  let h = '<div class="okbox"><b>✅ 刪除流程已完成</b>（'+esc(j.created)+'）</div>';
+  h += '<div class="result"><table><tr><th>項目</th><th style="text-align:right">數值</th></tr>'
     + [['要求項目', j.requested],['實際執行', j.target_count],
        ['剔除', (j.rejected||[]).length],['完全移除', j.fully_removed],
        ['部分殘留', j.partial],['刪除前剩餘（合計）', fmt(j.free_before_mb)],
        ['刪除後剩餘（合計）', fmt(j.free_after_mb)],['觀測淨增', fmt(j.observed_gain_mb)],
        ['帳面目標', fmt(j.target_mb)],['實際可釋放', fmt(j.effective_mb)]]
-      .map(r=>'<tr><td>'+esc(r[0])+'</td><td class="sz">'+esc(r[1])+'</td></tr>').join('')
+      .map(r=>'<tr><td>'+esc(r[0])+'</td><td class="td-size">'+esc(r[1])+'</td></tr>').join('')
     + '</table></div>';
   if((j.per_drive||[]).length){
     h += '<div class="result"><b>逐碟結果</b><table><tr><th>磁碟</th><th>狀態</th><th>執行</th>'
-      + '<th>完全移除</th><th>殘留</th><th>實際可釋放</th><th>觀測淨增</th></tr>'
+      + '<th>完全移除</th><th>殘留</th><th style="text-align:right">可釋放</th><th style="text-align:right">淨增</th></tr>'
       + j.per_drive.map(d=>'<tr><td><b>'+esc(d.letter)+':</b></td><td>'+esc(d.status)+'</td><td>'
         +esc(d.target_count||0)+'</td><td>'+esc(d.fully_removed||0)+'</td><td>'
-        +esc(d.partial||0)+'</td><td class="sz">'+fmt(d.effective_mb||0)+'</td><td class="sz">'
+        +esc(d.partial||0)+'</td><td class="td-size">'+fmt(d.effective_mb||0)+'</td><td class="td-size">'
         +fmt(d.observed_gain_mb||0)+'</td></tr>').join('')
       + '</table></div>';
   }
-  h += '<div class="warn">'+esc(j.gain_note||'')
+  h += '<div class="warnbox">'+esc(j.gain_note||'')
     + '<br>manifest：'+(j.manifests||[j.manifest]).filter(Boolean).map(x=>'<code>'+esc(x)+'</code>').join('<br>')
     + ((j.backups||[]).length ? '<br>備份：'+j.backups.map(x=>'<code>'+esc(x)+'</code>').join('<br>') : '')
     + ((j.logs||[j.log_path]).filter(Boolean).length
@@ -486,18 +775,19 @@ function showResult(j){
     + '</div>';
   const residual = (j.per_drive||[]).flatMap(d=>(d.recycle_bin_residual||[]).map(r=>({letter:d.letter, ...r})));
   if(residual.length){
-    h += '<div class="warn"><b>回收站殘留（依 SID，未自動清除）</b><ul>'
-      + residual.map(r=>'<li><b>'+esc(r.letter)+':</b> <code>'+esc(r.sid)+'</code>：'+r.files+' 檔 / '+fmt(r.mb)+'</li>').join('')
-      + '</ul></div>';
+    h += '<div class="warnbox"><b>回收站殘留（依 SID，未自動清除）</b><ul>'
+      + residual.map(r=>'<li><b>'+esc(r.letter)+':</b> <code>'+esc(r.sid)+'</code>：'
+        + r.files+' 檔 / '+fmt(r.mb)+'</li>').join('')+'</ul></div>';
   }
   if((j.rejected||[]).length){
-    h += '<div class="warn"><b>被剔除的項目（'+j.rejected.length+'）</b><ul>'
+    h += '<div class="warnbox"><b>被剔除的項目（'+j.rejected.length+'）</b><ul>'
       + j.rejected.slice(0,40).map(r=>'<li><code>'+esc(r.path)+'</code> — '+esc(r.reason)+'</li>').join('')
-      + '</ul>'+(j.rejected.length>40?'<div class="desc">…另有 '+(j.rejected.length-40)+' 項</div>':'')+'</div>';
+      + '</ul>'+(j.rejected.length>40?'<div style="color:var(--tx3);font-size:11.5px">…另有 '
+        +(j.rejected.length-40)+' 項</div>':'')+'</div>';
   }
   const mf = showModal('執行結果', h,
     '<button id="m-close" class="ghost">關閉結果</button>'
-    + '<button id="m-close-page" class="primary">B. 人工處理／關閉網頁</button>');
+    + '<button id="m-close-page" class="primary">B. 人工處理／關閉網頁</button>', true);
   mf.querySelector('#m-close').onclick = ()=>{ closeModal(); location.reload(); };
   mf.querySelector('#m-close-page').onclick = closePage;
 }
@@ -515,87 +805,82 @@ async function closePage(){
 }
 document.getElementById('btn-close').onclick = closePage;
 
-function renderLastRun(){
-  const L = META.last_delete;
-  if(!L) return;
-  const el = document.getElementById('lastrun');
-  if(!el) return;
-  const NAME = {EXECUTED:'✅ 全部完成', PARTIAL:'🟡 部分殘留', ABORTED:'⛔ 被中斷'};
-  el.className = (L.status==='EXECUTED') ? 'notice' : 'warn';
-  el.innerHTML = '<b>上次執行</b>　'+(L.created||'—')+'　｜　'+(NAME[L.status]||L.status||'—')
-    + '　｜　執行 <b>'+(L.target_count||0)+'</b> 項，完整移除 '+(L.fully_removed||0)
-    + '、殘留 '+(L.partial||0)
-    + '　｜　實際可釋放 <b>'+fmt(L.effective_mb||0)+'</b>'
-    + '　｜　執行後剩餘 '+(L.free_pct!=null?L.free_pct+'%':'—')
-    + '　｜　<a href="#" id="lnk-last">執行紀錄</a>';
-  el.style.display = '';
-  const a = el.querySelector('#lnk-last');
-  if(a) a.onclick = (ev)=>{
-    ev.preventDefault();
-    const pd = (L.per_drive||[]);
-    const body = '<div class="result"><table><tr><th>項目</th><th>數值</th></tr>'
-      + [['狀態', L.status],['開始', L.created],['執行項數', L.target_count],
-         ['完整移除', L.fully_removed],['殘留', L.partial],
-         ['實際可釋放', fmt(L.effective_mb||0)],['觀測淨增', fmt(L.observed_gain_mb||0)],
-         ['執行後剩餘比例', (L.free_pct!=null?L.free_pct+'%':'—')]]
-        .map(r=>'<tr><td>'+esc(r[0])+'</td><td class="sz">'+esc(r[1])+'</td></tr>').join('')
-      + '</table></div>'
-      + (pd.length ? '<div class="result"><b>逐碟</b><table><tr><th>磁碟</th><th>狀態</th><th>執行</th><th>可釋放</th></tr>'
-         + pd.map(d=>'<tr><td><b>'+esc(d.letter)+':</b></td><td>'+esc(d.status)+'</td><td>'
-           + esc(d.target_count||0)+'</td><td class="sz">'+fmt(d.effective_mb||0)+'</td></tr>').join('')
-         + '</table></div>' : '')
-      + '<div class="warn">manifest：'+((L.manifests||[L.manifest]).filter(Boolean).map(x=>'<code>'+esc(x)+'</code>').join('<br>')||'—')
-      + '<br>紀錄：'+((L.logs||[L.log_path]).filter(Boolean).map(x=>'<code>'+esc(x)+'</code>').join('<br>')||'—')+'</div>';
-    const mf2 = showModal('上次執行紀錄', body, '<button id="m-lc" class="ghost">關閉</button>', true);
-    mf2.querySelector('#m-lc').onclick = closeModal;
-  };
-  return false;
-}
-
-// 碟別篩選：只影響「看哪一顆」，不影響勾選與排序。
-// 單碟時整排隱藏，版面與舊版相同。
+/* ---------------- 碟別 chips（單碟時整排隱藏） ---------------- */
 function renderChips(){
   const box = document.getElementById('chips');
-  // 先算「有碟沒被分析」——這在只分析過一顆碟時最需要提醒，
-  // 所以不能放在 DRIVES.length<2 的提早返回之後。
+  // 先算「有碟沒被分析」——只分析過一顆碟時最需要提醒，不能放在提早返回之後
   const missing = AVAILABLE.filter(d=>d.ok && !d.scanned);
   document.getElementById('missing').innerHTML = missing.length
-    ? '<div class="warn">尚有 <b>'+missing.length+'</b> 顆磁碟未分析：'
+    ? '<div class="miss">尚有 <b>'+missing.length+'</b> 顆磁碟未分析：'
       + missing.map(d=>'<b>'+esc(d.letter)+':</b>').join('、')
-      + '。按「選擇磁碟並重新分析」把它們加進這份報告（會合成同一頁）。</div>'
+      + '　按「選擇磁碟並重新分析」把它們加進這份報告（會合成同一頁）。</div>'
     : '';
-  if(!DRIVES.length || DRIVES.length < 2){ return; }
+  if(DRIVES.length < 2){ return; }
   box.classList.add('on');
-  const all = '<span class="chip'+(driveFilter==='ALL'?' on':'')+'" data-f="ALL">全部（'+DRIVES.length+' 顆）</span>';
+  const all = '<span class="chip'+(state.drive==='ALL'?' on':'')+'" data-f="ALL">全部（'+DRIVES.length+' 顆）</span>';
   const one = DRIVES.map(d=>{
     const txt = d.letter+': '+(d.ok
       ? d.free_gb.toFixed(1)+'／'+d.total_gb.toFixed(0)+' GB（'+d.free_pct.toFixed(1)+'%）'
       : '讀不到');
-    return '<span class="chip'+(driveFilter===d.letter?' on':'')+(d.ok?'':' bad')+'" data-f="'+esc(d.letter)+'" title="只看 '+esc(d.drive)+'">'+esc(txt)+'</span>';
+    return '<span class="chip'+(state.drive===d.letter?' on':'')+(d.ok?'':' bad')+'" data-f="'
+      + esc(d.letter)+'" title="只看 '+esc(d.drive)+'">'+esc(txt)+'</span>';
   }).join('');
   box.innerHTML = all + one;
   box.querySelectorAll('.chip').forEach(c=>{
     c.onclick = ()=>{
       if(c.classList.contains('bad')) return;
-      driveFilter = c.dataset.f;
-      renderChips(); renderTables();
+      state.drive = c.dataset.f;
+      renderChips(); renderGroups();
     };
   });
 }
 
-renderKPI();
+/* ---------------- 頁尾 ---------------- */
+function renderNotes(){
+  const L = META.last_delete;
+  const NAME = {EXECUTED:'全部完成', PARTIAL:'部分殘留', ABORTED:'被中斷'};
+  document.getElementById('lastrun-sm').textContent =
+    L ? (L.created+' · '+(NAME[L.status]||L.status)) : '尚無紀錄';
+  document.getElementById('lastrun-body').innerHTML = L ? (
+    '<table><tr><th>項目</th><th style="text-align:right">數值</th></tr>'
+    + [['狀態', NAME[L.status]||L.status],['開始時間', L.created],
+       ['執行項數', L.target_count],['完整移除', L.fully_removed],['殘留', L.partial],
+       ['帳面目標', fmt(L.effective_mb||0)],['觀測淨增', fmt(L.observed_gain_mb||0)],
+       ['執行後剩餘', (L.free_pct!=null?L.free_pct+'%':'—')]]
+      .map(r=>'<tr><td>'+esc(r[0])+'</td><td style="text-align:right;font-weight:600">'+esc(r[1])+'</td></tr>').join('')
+    + '</table>'
+    + ((L.per_drive||[]).length ? '<p><b>逐碟</b></p><table><tr><th>磁碟</th><th>狀態</th>'
+        + '<th style="text-align:right">執行</th><th style="text-align:right">可釋放</th></tr>'
+        + L.per_drive.map(d=>'<tr><td><b>'+esc(d.letter)+':</b></td><td>'+esc(d.status)+'</td>'
+          + '<td style="text-align:right">'+esc(d.target_count||0)+'</td>'
+          + '<td style="text-align:right">'+fmt(d.effective_mb||0)+'</td></tr>').join('')
+        + '</table>' : '')
+    + '<p>「帳面目標」是計劃可釋放，「觀測淨增」才是實際觀察到的變化，'
+    + '兩者差距大通常代表目標目錄內有檔案被鎖住（使用中）。</p>'
+  ) : '<p>尚無執行紀錄。</p>';
+
+  document.getElementById('attach-body').innerHTML = L ? (
+    '<ul><li>manifest：'+(L.manifests||[L.manifest]).filter(Boolean).map(x=>'<code>'+esc(x)+'</code>').join('<br>')+'</li>'
+    + '<li>執行紀錄：'+(L.logs||[L.log_path]).filter(Boolean).map(x=>'<code>'+esc(x)+'</code>').join('<br>')+'</li>'
+    + '<li>ZIP 備份目錄：<code>'+esc(META.backup_dir||'data\\backup\\')+'</code></li></ul>'
+    + '<p>備份只針對單項 &lt;100 MB 的小項目；大型目錄不做備份，刪除後無法復原。</p>'
+  ) : '<p>尚未有執行紀錄，因此沒有附件。</p>';
+}
+
+/* ---------------- 啟動 ---------------- */
+renderHero();
 renderChips();
-renderLastRun();
-renderTables();
-updateStat();
+render();
+renderNotes();
+
 if(!API){
-  document.getElementById('dangerbox').className = 'warn';
-  document.getElementById('dangerbox').innerHTML =
-    '🟡 <b>離線唯讀模式</b>：這份是單檔靜態報告，瀏覽器沙箱無法刪除本機檔案。'
-    + '請執行 <code>python scripts/cdiskctl.py serve</code> 啟動只綁 127.0.0.1 的本機後端，'
-    + '即可使用真正的「執行刪除」。';
+  document.getElementById('warnline').innerHTML =
+    '<span>🟡 <b>離線唯讀模式</b>：這份是單檔靜態報告，瀏覽器沙箱無法刪除本機檔案。'
+    + '執行 <code>python scripts/cdiskctl.py serve</code> 啟動只綁 127.0.0.1 的本機後端，'
+    + '即可使用真正的「執行刪除」。</span>';
   document.getElementById('btn-close').disabled = true;
   document.getElementById('btn-rescan').disabled = true;
+  document.getElementById('btn-delete').textContent = '執行刪除（需 serve 模式）';
 }
 // ?pick=1：桌寵在多碟機器按下「立即背景分析」時帶進來，直接開選單（預設全選）
 // 沒有任何掃描結果時也自動開：先請使用者選磁碟，不要顯示一份空報告。
