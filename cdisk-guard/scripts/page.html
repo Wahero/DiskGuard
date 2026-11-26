@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>C:\ 磁碟清理清單 · 三檔分級 · cdisk-guard</title>
+<title>__DRIVE_TEXT__ 磁碟清理清單 · 三檔分級 · cdisk-guard</title>
 <style>
 :root{
   --bg:#0d1117; --bg2:#111820; --card:#161d26; --card2:#1b2530;
@@ -72,6 +72,13 @@ input[type=checkbox]:disabled{cursor:not-allowed;opacity:.35}
 .tag.skip{color:#f0cc6b;border-color:#6b5518}
 .nav{display:flex;flex-wrap:wrap;gap:8px;margin:10px 0 0}
 .nav a{font-size:12px;padding:5px 10px;background:var(--card);border:1px solid var(--line);border-radius:20px}
+.drives{display:none;flex-wrap:wrap;gap:8px;margin:12px 0 0}
+.drives.on{display:flex}
+.drives a,.drives span{font-size:12px;padding:5px 11px;border-radius:20px;
+ background:var(--card);border:1px solid var(--line);color:var(--tx2);
+ font-variant-numeric:tabular-nums;text-decoration:none}
+.drives .cur{background:#1c3a5e;border-color:var(--pri);color:#cfe4ff;font-weight:600}
+.drives .bad{opacity:.45;text-decoration:line-through}
 footer{margin-top:44px;padding-top:16px;border-top:1px solid var(--line);color:var(--tx3);font-size:12px}
 .mask{position:fixed;inset:0;background:rgba(0,0,0,.78);z-index:100;display:none;
  align-items:center;justify-content:center;padding:18px}
@@ -100,10 +107,11 @@ footer{margin-top:44px;padding-top:16px;border-top:1px solid var(--line);color:v
 <body>
 <div class="wrap">
 <header>
-  <h1>C:\ 磁碟清理清單 · 三檔分級</h1>
+  <h1>__DRIVE_TEXT__ 磁碟清理清單 · 三檔分級</h1>
   <div class="sub">掃描時間 __NOW__ ｜ cdisk-guard 單次遍歷（跳過 junction）｜ <b id="modehint"></b></div>
+  <div class="drives" id="drives"></div>
   <div class="nav">
-    <a href="#s-root">▸ C:\ 根目錄</a><a href="#s-users">▸ 各用戶佔用</a>
+    <a href="#s-root">▸ __DRIVE_TEXT__ 根目錄</a><a href="#s-users">▸ 各用戶佔用</a>
     <a href="#s-useritem">▸ 用戶目錄明細</a><a href="#s-junk">▸ 已知垃圾點</a>
     <a href="#s-appdata">▸ AppData 細項</a><a href="#s-big">▸ 大檔案</a>
     <a href="#s-rule">▸ 安全邊界</a>
@@ -116,7 +124,7 @@ footer{margin-top:44px;padding-top:16px;border-top:1px solid var(--line);color:v
 <div id="lastrun" style="display:none"></div>
 
 <div class="notice">✅ <b>安全度分級：</b>A 檔＝臨時檔／快取／安裝包殘留，可放心刪；B 檔＝軟體資料或自建目錄，需你判斷；C 檔＝系統元件／個人資料／憑證，<b>checkbox 已鎖定，後端也會再次拒絕</b>。<b>預設已勾選所有 A 檔</b>（依設定排除的項目除外）。</div>
-<div class="danger" id="dangerbox">⚠️ <b>此操作非常危險，可能導致不可逆的數據丟失！</b> 本頁由只綁 127.0.0.1 的本機後端提供，按下「執行刪除」會先弹出確認視窗逐項列出完整路徑；再次確認後<b>直接刪除</b>勾選項目，不經回收站。僅 &lt;100 MB 小項有 ZIP 備份可還原。</div>
+<div class="danger" id="dangerbox">⚠️ <b>此操作非常危險，可能導致不可逆的數據丟失！</b> 本頁由只綁 127.0.0.1 的本機後端提供，按下「執行刪除」會先弹出確認視窗逐項列出完整路徑；再次確認後<b>直接刪除</b>勾選項目，本工具不主動移入回收站（部分環境下非系統碟仍可能被系統導向該碟回收站）。僅 &lt;100 MB 小項有 ZIP 備份可還原。</div>
 
 <div class="toolbar">
   <button id="btn-sort-tier" class="on">排序：安全度優先</button>
@@ -131,10 +139,10 @@ footer{margin-top:44px;padding-top:16px;border-top:1px solid var(--line);color:v
   <button id="btn-close" class="ghost">B. 人工處理／關閉網頁</button>
 </div>
 
-<section id="s-root"><h2>一、C:\ 根目錄</h2>
+<section id="s-root"><h2>一、__DRIVE_TEXT__ 根目錄</h2>
  <div class="desc">依佔用大小排列；前三項與 Windows 等系統元件歸 C 檔，禁止勾選。</div>
  <div id="t-root"></div></section>
-<section id="s-users"><h2>二、C:\Users 各用戶佔用</h2>
+<section id="s-users"><h2>二、__DRIVE_TEXT__Users 各用戶佔用</h2>
  <div class="desc">單次遍歷、排除 reparse point，與其他區塊同一資料來源，不會出現兩套口徑。使用者設定檔總目錄不可整刪。</div>
  <div id="t-users"></div></section>
 <section id="s-useritem"><h2>三、各用戶目錄明細</h2>
@@ -152,7 +160,7 @@ footer{margin-top:44px;padding-top:16px;border-top:1px solid var(--line);color:v
 <section id="s-rule"><h2>七、安全邊界與執行流程</h2>
  <div class="warn">🟢 <b>刪除流程（對應 2026-11-23 實際做法）</b>：① 剔除 C 檔／鎖定項／父子重疊子項／設定排除項 → ② 寫入完整 manifest → ③ &lt;100 MB 小項做 ZIP 備份 → ④ 每批最多 10 項、Python 直接刪除（使用中檔案自動略過） → ⑤ 逐項複核 → ⑥ 同資料來源對比空間 → ⑦ 寫執行紀錄。<br>
  🔵 <b>特殊動作</b>：Explorer 只刪 thumbcache_*.db；回收站內容依設定走 SHEmptyRecycleBinW，目錄本身不刪；他人 SID 的回收站殘留只回報、不清除。<br>
- 🔴 <b>不可逆</b>：本次刪除不進回收站，觀測淨增受其他程式寫入影響，與帳面目標值分開呈現。</div>
+ 🔴 <b>不可逆</b>：本工具直接刪除、不主動移入回收站；但部分環境（非系統碟、第三方檔案篩選）仍可能被系統留一份在該碟回收站，實際殘留以「回收站殘留」為準。觀測淨增受其他程式寫入影響，與帳面目標值分開呈現。</div>
 </section>
 
 <footer>cdisk-guard · 純本機 Python stdlib 產生 · 運行期零模型呼叫 · 掃描檔案數與耗時見頁首 KPI</footer>
@@ -169,6 +177,8 @@ const DATA = __DATA__;
 const DISK = __DISK__;
 const META = __META__;
 const API = __API__;
+const DRIVE = __DRIVE__;
+const DRIVES = __DRIVES__;
 const TOKEN = '__TOKEN__';
 const TIER_LABEL = {'A':'A 檔 · 放心刪','B':'B 檔 · 需確認','C':'C 檔 · 禁止刪'};
 const TIER_ORDER = {'A':0,'B':1,'C':2};
@@ -286,7 +296,7 @@ document.getElementById('btn-rescan').onclick = async ()=>{
   btn.disabled = true; btn.textContent = '掃描中…';
   try{
     const r = await fetch('/api/rescan',{method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({token:TOKEN})});
+      body:JSON.stringify({token:TOKEN, drive:DRIVE})});
     const j = await r.json();
     if(j.ok) location.reload();
     else { btn.disabled=false; btn.textContent='重新掃描'; alert('重新掃描失敗：'+(j.error||'')); }
@@ -308,7 +318,7 @@ document.getElementById('btn-delete').onclick = ()=>{
   const gross = sel.reduce((s,x)=>s+x.mb,0);
   const eff = effectiveMB(sel);
   let h = '<div class="danger"><b>⚠️ 此操作非常危險，可能導致不可逆的數據丟失！</b><br>'
-    + '以下 <b>'+sel.length+'</b> 個項目、帳面 <b>'+fmt(gross)+'</b>（扣除父子重疊後約 <b>'+fmt(eff)+'</b>）將被<b>直接刪除，不經回收站</b>。'
+    + '以下 <b>'+sel.length+'</b> 個項目、帳面 <b>'+fmt(gross)+'</b>（扣除父子重疊後約 <b>'+fmt(eff)+'</b>）將被<b>直接刪除（本工具不主動移入回收站）</b>。'
     + '請逐項核對完整路徑。</div>';
   h += '<div class="warn">刪除前會自動建立 manifest 與 &lt;100 MB 小項 ZIP 備份；'
      + '使用中／被鎖定的檔案會略過並記入執行紀錄；C 檔與鎖定項由後端再次拒絕。</div>';
@@ -332,7 +342,7 @@ document.getElementById('btn-delete').onclick = ()=>{
     const poll = async ()=>{
       if(stopped) return;
       try{
-        const pr = await fetch('/api/progress',{cache:'no-store'});
+        const pr = await fetch('/api/progress?drive='+encodeURIComponent(DRIVE),{cache:'no-store'});
         const pj = await pr.json();
         const p = pj.progress || {};
         const done = p.done||0, total = p.total||0;
@@ -351,7 +361,7 @@ document.getElementById('btn-delete').onclick = ()=>{
     poll();
     try{
       const r = await fetch('/api/delete',{method:'POST',headers:{'Content-Type':'application/json'},
-        body:JSON.stringify({token:TOKEN, confirm:true, paths:sel.map(x=>x.path)})});
+        body:JSON.stringify({token:TOKEN, drive:DRIVE, confirm:true, paths:sel.map(x=>x.path)})});
       const j = await r.json();
       stopped = true;
       showResult(j);
@@ -375,7 +385,9 @@ function showResult(j){
       .map(r=>'<tr><td>'+esc(r[0])+'</td><td class="sz">'+esc(r[1])+'</td></tr>').join('')
     + '</table></div>';
   h += '<div class="warn">'+esc(j.gain_note||'')+'<br>manifest：<code>'+esc(j.manifest||'')+'</code><br>'
-     + '備份：<code>'+esc((j.backup||{}).path||'—')+'</code><br>'
+     + '備份：<code>'+esc((j.backup||{}).path||((j.backup||{}).skipped_reason?'（未備份）':'—'))+'</code><br>'
+     + ((j.backup||{}).skipped_reason
+        ? '<span style="color:#f0d9a8">⚠ '+esc(j.backup.skipped_reason)+'</span><br>' : '')
      + '紀錄：<code>'+esc(j.log_path||'')+'</code></div>';
   if((j.recycle_bin_residual||[]).length){
     h += '<div class="warn"><b>回收站殘留（依 SID，未自動清除）</b><ul>'
@@ -441,7 +453,30 @@ function renderLastRun(){
   return false;
 }
 
+// 多碟切換：只有一顆碟時整排隱藏，不佔版面。
+// 離線靜態報告＝連到同目錄下的另一顆碟的檔案；本機後端＝帶 ?drive= 重載。
+function renderDrives(){
+  const box = document.getElementById('drives');
+  if(!DRIVES || DRIVES.length < 2){ return; }
+  box.classList.add('on');
+  box.innerHTML = DRIVES.map(d=>{
+    const tag = esc(d.letter) + ':';
+    const txt = d.ok
+      ? tag + ' ' + d.free_gb.toFixed(1) + '／' + d.total_gb.toFixed(0) + ' GB（' + d.free_pct.toFixed(1) + '%）'
+      : tag + ' 讀不到';
+    if(d.current){
+      return '<span class="cur" title="目前顯示的磁碟">' + txt + '</span>';
+    }
+    if(!d.ok){ return '<span class="bad" title="' + esc(d.error||'') + '">' + txt + '</span>'; }
+    const href = API
+      ? ('?drive=' + encodeURIComponent(d.drive))
+      : encodeURIComponent(d.report).replace(/%2F/g, '/');
+    return '<a href="' + href + '" title="切換到 ' + esc(d.drive) + '">' + txt + '</a>';
+  }).join('');
+}
+
 renderKPI();
+renderDrives();
 renderLastRun();
 renderTables();
 updateStat();

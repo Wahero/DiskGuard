@@ -1,6 +1,7 @@
 {
   "_comment": "cdisk-guard 設定。所有路徑相對於技能根目錄，除非以磁碟機代號開頭。修改後不需重裝，watch 每次循環會重新讀取。",
   "drive": "C:\\",
+  "drives": ["C:\\"],
   "alert": {
     "threshold_pct": 2.0,
     "warn_pct": 10.0,
@@ -39,7 +40,7 @@
     "locked_paths": ["$recycle.bin"],
     "special_actions": {
       "thumbcache_only": ["\\microsoft\\windows\\explorer"],
-      "empty_recycle_bin": ["c:\\$recycle.bin"]
+      "empty_recycle_bin": ["$recycle.bin"]
     }
   },
   "server": {
@@ -49,7 +50,7 @@
   },
   "paths": {
     "output_dir": "data",
-    "page_filename": "C盘清理清单.html",
+    "page_filename": "{drive}盘清理清单.html",
     "log_filename": "cdisk-guard.log"
   }
 }

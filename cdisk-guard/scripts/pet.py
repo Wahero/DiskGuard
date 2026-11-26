@@ -746,6 +746,7 @@ class PetApp:
         self.blink_repeat = 0
         self.idle_blink = bool(pcfg.get('idle_blink', True))
         self.paused_until = 0.0
+        self.alert_drive = None      # 哪顆碟觸發了警示（多碟時開頁要開對顆）
         self.last_alert = float(self.pet_state.get('last_alert', 0) or 0)
         self.stop_evt = threading.Event()
         self.drag = None
@@ -1040,7 +1041,12 @@ class PetApp:
 
     # ---------- 面板 ----------
     def _panel_size(self):
-        return self._fs(340), self._fs(264)
+        # 多碟時容量區塊一碟一行；4 顆以內與舊版同高，超過才往下長。
+        try:
+            n = len(C.drive_list(self.cfg))
+        except Exception:
+            n = 1
+        return self._fs(340), self._fs(264) + self._fs(22) * max(0, n - 4)
 
     def _tray_left_anchor(self):
         r = RECT()
@@ -1073,7 +1079,7 @@ class PetApp:
         y = max(sy, min(int(ay), sy + sh - H))
         self.usage_win.move(x, y)
         d = C.disk_info(self.cfg['drive'])
-        scanp = os.path.join(C.out_dir(self.cfg), 'scan.json')
+        scanp = C.scan_path(self.cfg)
         try:
             scan_t = datetime.datetime.fromtimestamp(
                 os.path.getmtime(scanp)).strftime('%Y-%m-%d %H:%M')
@@ -1090,6 +1096,40 @@ class PetApp:
 
         S = self._fs
 
+        # 多碟（>1）時，原本「總容量／已用／剩餘／可用比例」四行改成一碟一行，
+        # 一眼看出哪顆快滿；單碟時版面與舊版完全相同。後四項永遠是「當前碟」的。
+        try:
+            many = C.drive_list(self.cfg)
+        except Exception:
+            many = [self.cfg['drive']]
+        if len(many) > 1:
+            head = []
+            for dd in C.drive_summary(self.cfg):
+                if dd.get('ok'):
+                    head.append((dd['letter'] + ':',
+                                 '%.1f／%.0f GB · %.1f%%' % (
+                                     dd['free_gb'], dd['total_gb'], dd['free_pct']),
+                                 BGR(255, 128, 128) if dd['free_pct'] < threshold
+                                 else BGR(126, 224, 168)))
+                else:
+                    head.append((dd['letter'] + ':', '讀不到', BGR(160, 176, 198)))
+        else:
+            head = [
+                ('總容量', '%.2f GB' % d['total_gb'], BGR(232, 238, 246)),
+                ('已用', '%.2f GB' % d['used_gb'], BGR(232, 238, 246)),
+                ('剩餘', '%.2f GB' % d['free_gb'],
+                 BGR(255, 128, 128) if low else BGR(126, 224, 168)),
+                ('可用比例', '%.2f%%' % d['free_pct'],
+                 BGR(255, 128, 128) if low else BGR(126, 224, 168)),
+            ]
+        rows = head + [
+            ('門檻線', '%.2f%%（約 %.2f GB）' % (threshold, limit_gb),
+             BGR(200, 186, 255)),
+            ('上次分析', scan_t, BGR(232, 238, 246)),
+            ('下次檢查', nxt, BGR(232, 238, 246)),
+            ('狀態', st, BGR(200, 214, 232)),
+        ]
+
         def draw(hdc):
             # 整塊先填滿：opaque 模式下未被填到的像素會變成黑塊
             _brush(hdc, BGR(16, 22, 32), lambda: gdi32.Rectangle(hdc, 0, 0, W, H))
@@ -1097,32 +1137,20 @@ class PetApp:
             _brush(hdc, BGR(28, 37, 52), lambda: gdi32.Rectangle(hdc, 0, S(3), W, S(48)))
             _brush(hdc, BGR(58, 72, 94), lambda: gdi32.Rectangle(hdc, 0, S(48), W, S(49)))
             _text(hdc, S(18), S(15), 'DiskGuard · 磁碟用量', S(18), BGR(240, 245, 252), True)
-            _text(hdc, S(292), S(18), 'C:', S(14), BGR(160, 176, 198), True)
-            rows = [
-                ('總容量', '%.2f GB' % d['total_gb'], BGR(232, 238, 246)),
-                ('已用', '%.2f GB' % d['used_gb'], BGR(232, 238, 246)),
-                ('剩餘', '%.2f GB' % d['free_gb'],
-                 BGR(255, 128, 128) if low else BGR(126, 224, 168)),
-                ('可用比例', '%.2f%%' % d['free_pct'],
-                 BGR(255, 128, 128) if low else BGR(126, 224, 168)),
-                ('門檻線', '%.2f%%（約 %.2f GB）' % (threshold, limit_gb),
-                 BGR(200, 186, 255)),
-                ('上次分析', scan_t, BGR(232, 238, 246)),
-                ('下次檢查', nxt, BGR(232, 238, 246)),
-                ('狀態', st, BGR(200, 214, 232)),
-            ]
+            _text(hdc, S(292), S(18), C.drive_key(d['drive']) + ':', S(14),
+                  BGR(160, 176, 198), True)
             y = S(62)
             for k, v, color in rows:
                 _text(hdc, S(18), y, k, S(14), BGR(152, 168, 190))
                 _text(hdc, S(132), y, v, S(14), color)
                 y += S(22)
-            _text(hdc, S(18), S(246), '左鍵關閉 · 唯讀面板', S(11), BGR(120, 138, 160))
+            _text(hdc, S(18), H - S(18), '左鍵關閉 · 唯讀面板', S(11), BGR(120, 138, 160))
             _brush(hdc, BGR(48, 58, 74),
-                   lambda: gdi32.Rectangle(hdc, S(18), S(236), S(322), S(242)))
+                   lambda: gdi32.Rectangle(hdc, S(18), H - S(28), S(322), H - S(22)))
             used = max(0.0, min(1.0, 1.0 - d['free_pct'] / 100.0))
             _brush(hdc, BGR(255, 128, 128) if low else BGR(126, 142, 246),
-                   lambda: gdi32.Rectangle(hdc, S(18), S(236),
-                                           S(18) + int(S(304) * used), S(242)))
+                   lambda: gdi32.Rectangle(hdc, S(18), H - S(28),
+                                           S(18) + int(S(304) * used), H - S(22)))
 
         self.usage_win.paint(draw)
         self.usage_win.show(True)
@@ -1756,7 +1784,7 @@ class PetApp:
     # ---------- Phase 2 請求（UI → worker，只用 Event，不阻塞訊息迴圈） ----------
     def _open_offline_report(self):
         """離線唯讀清單頁（API=false）。原為獨立選單項，現併入「開啟分析網頁」的降級路徑。"""
-        p = os.path.join(C.out_dir(self.cfg), 'C盘清理清单.html')
+        p = C.page_path(self.cfg)
         if os.path.exists(p):
             shell32.ShellExecuteW(0, None, p, None, None, 1)
             self.sfx('page_open')
@@ -1980,10 +2008,13 @@ class PetApp:
             event(self.cfg, 'alert_cooldown')
             return
         self.last_alert = time.time()
-        d = C.disk_info(self.cfg['drive'])
+        # 多碟時警示的是「最危險的那顆」，後續開網頁／面板都要跟著它
+        dv = self.alert_drive or self.cfg['drive']
+        self.cfg['drive'] = dv
+        d = C.disk_info(dv)
         self.sfx('alert_enter')
         self.tray(icon=self.tray_icon(True),
-                  tip='DiskGuard · 警告 C: %.2f%% 可用' % d['free_pct'])
+                  tip='DiskGuard · 警告 %s %.2f%% 可用' % (C.drive_key(dv), d['free_pct']))
         # 最近的托盤邊緣：用工作列 rect 作為托盤代理位置
         tr = RECT()
         user32.GetWindowRect(user32.FindWindowW('Shell_TrayWnd', None), ctypes.byref(tr))
@@ -2383,7 +2414,9 @@ class PetApp:
         while not self.stop_evt.wait(1.0):
             now = time.time()
             try:
-                cfg = C.load_config(self.config_path) if self.config_path else C.load_config()
+                cfg = C.normalize_config(
+                    C.load_config(self.config_path) if self.config_path
+                    else C.load_config())
                 if self.page_req.is_set():
                     self.page_req.clear()
                     self._serve_open(cfg, self.page_reason)
@@ -2391,18 +2424,27 @@ class PetApp:
                     self.scan_req.clear()
                     self._run_scan_flow(cfg, self.scan_reason)
                 if now >= next_check:
-                    d = C.disk_info(cfg['drive'])
-                    C.log(cfg, 'pet check pct=%.2f free=%.2fGB' %
-                          (d['free_pct'], d['free_gb']))
-                    if (d['free_pct'] < cfg['alert']['threshold_pct']
-                            and now >= self.paused_until):
+                    # 逐碟檢查：任何一顆低於門檻都要警示，取最危險的那顆。
+                    lows = []
+                    for dv in C.drive_list(cfg):
+                        try:
+                            di = C.disk_info(dv)
+                        except OSError:
+                            continue
+                        C.log(cfg, 'pet check %s pct=%.2f free=%.2fGB' %
+                              (dv, di['free_pct'], di['free_gb']))
+                        if di['free_pct'] < cfg['alert']['threshold_pct']:
+                            lows.append((di['free_pct'], dv))
+                    if lows and now >= self.paused_until:
+                        lows.sort()
+                        self.alert_drive = lows[0][1]
                         user32.PostMessageW(self.hwnd, WM_ALERT, 0, 0)
                     else:
                         self.tray_icon(False)
                         self.tray(tip=self.tip_text())
                     # 週期分析與警示狀態脫鉤：原本這段寫在 else 裡，磁碟低於門檻時
                     # 永遠進不到，結果「每週一分析」在最需要它的時候反而不會跑（B7）。
-                    self.maybe_weekly(cfg, disk=d)
+                    self.maybe_weekly(cfg, disk=C.disk_info(cfg['drive']))
                     next_check = now + int(self.p.get('check_interval_sec', 300))
                 if now >= next_beat:
                     self.save_state()
@@ -2652,7 +2694,7 @@ def main(argv=None):
         i = argv.index('--config')
         cfg_path = argv[i + 1] if i + 1 < len(argv) else None
         del argv[i:i + 2]
-    cfg = C.load_config(cfg_path)
+    cfg = C.normalize_config(C.load_config(cfg_path))
     if '--health' in argv:
         return cmd_health(cfg)
     if '--selftest' in argv:
