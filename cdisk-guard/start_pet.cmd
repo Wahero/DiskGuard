@@ -9,6 +9,7 @@ set "PY=C:\Users\Administrator\.workbuddy\binaries\python\versions\3.13.12\pytho
 if not exist "%PY%" set "PY=python"
 
 "%PY%" "%~dp0scripts\launch.py" pet
-if errorlevel 1 pause
+echo.
+pause
 
 endlocal
