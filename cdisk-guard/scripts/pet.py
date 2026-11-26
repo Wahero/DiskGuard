@@ -402,6 +402,8 @@ PET_DEFAULTS = {
     'heartbeat_sec': 60,
     'check_interval_sec': 300,
     # Phase 2（D7／D8 採計劃書建議值）：分析完自動開頁；閒置 600 s 關服務
+    # 2026-11-26：auto_open_page_after_scan 已無作用（分析完成一律開頁，選單開關已移除），
+    # 保留欄位只為讀得懂舊 config／舊 state，不要再拿它當開關。
     'auto_open_page_after_scan': True,
     'serve_idle_close_sec': 600,
     # 介面字級：1.0=標準、1.15=大（預設，左鍵面板比原版大一號）、1.3=特大
@@ -779,9 +781,19 @@ class PetApp:
         self.page_reason = 'manual'
         self.server = None
         self.server_last_active = 0.0
-        self.auto_open = bool(pcfg.get('auto_open_page_after_scan', True))
+        # 2026-11-26：分析完成後一律自動開結果頁（原本有「分析後自動開頁」開關，
+        # 已移除——手動按了分析就是在等結果，不該再要他多點一次）。
+        self.auto_open = True
         self.idle_close = int(pcfg.get('serve_idle_close_sec', 600))
-        self.last_scan_ts = 0.0
+        # 從 state 接回上次分析時間：原本每次重啟都歸零，--health 就永遠顯示 0
+        try:
+            self.last_scan_ts = float(self.pet_state.get('last_scan_ts') or 0)
+        except (TypeError, ValueError):
+            self.last_scan_ts = 0.0
+        # 手動分析期間在氣泡顯示「完成後會開啟分析結果」；由 _poll_jobs 持續刷新
+        self.scan_hint = ''
+        self.scan_hint_until = 0.0
+        self.notice_block_until = 0.0     # 剛播完清理結果提示時，不要被掃描提示蓋掉
         # 清理進度／結果回饋（B5、B6）：桌寵讀 cdiskctl 寫的兩個檔案
         self.bubble_win = None
         self.bubble_until = 0.0
@@ -1130,11 +1142,11 @@ class PetApp:
     # 系統設置的第二層，避免每次右鍵都要掃 11 行。
     #   移除「離線唯讀報告」——與「開啟分析網頁」重複，改為開頁失敗時自動降級
     #   移除「查看通知」——notice.md 幾乎永遠是空的，警示已由氣泡＋托盤提示
+    #   移除「分析後自動開頁」——分析完就是要看結果，改成一律自動開；連帶把
+    #     「查看日誌」從頂層收進系統設置最後一項（低頻工具，不佔第一眼）
     MENU = [
         (1001, '開啟分析網頁（本機服務）'),
         (1002, '立即背景分析一次'),
-        (0, None),
-        (1003, '查看日誌'),
         (0, None),
         (2000, '系統設置'),
         (0, None),
@@ -1144,9 +1156,9 @@ class PetApp:
     SUBMENU = {
         2000: [(2001, '字體大小'),
                (1007, '音效'),
-               (1009, '分析後自動開頁'),
                (1006, '隱藏桌寵'),
-               (1005, '暫停守護 1 小時')],
+               (1005, '暫停守護 1 小時'),
+               (1003, '查看日誌')],
         2001: [(3001, '標準'),
                (3002, '大'),
                (3003, '特大')],
@@ -1155,7 +1167,7 @@ class PetApp:
     # 圖示字形（Segoe UI Symbol，與參考範例的「圖示＋文字」排列一致）
     MENU_ICON = {
         1001: '◉', 1002: '⟳', 1003: '☰', 2000: '⚙', 1008: '⏻',
-        2001: 'A', 1007: '♪', 1009: '◐', 1006: '◑', 1005: '⏸',
+        2001: 'A', 1007: '♪', 1006: '◑', 1005: '⏸',
     }
     MENU_RADIUS = 10
     MENU_ICON_FONT = 'Segoe UI Symbol'
@@ -1180,8 +1192,6 @@ class PetApp:
         """✓ 一律代表「已開啟／已選用」，不再用 ✓ 表示「關閉」。"""
         if cid == 1007:
             return bool(self.sound)
-        if cid == 1009:
-            return bool(self.auto_open)
         v = self.FONT_CHOICE.get(cid)
         return v is not None and abs(self.font_scale - v) < 1e-6
 
@@ -1666,16 +1676,15 @@ class PetApp:
             event(self.cfg, 'menu_open_page')
         elif cid == 1002:
             self.sfx('scan')
+            # 使用者按了就是想知道結果：先講清楚「完成後會自動開頁」，避免
+            # 分析跑兩三分鐘期間他以為沒反應又去按第二次。
+            self.scan_hint = '背景分析中…'
+            self.scan_hint_until = time.time() + 1800
+            self.notice_block_until = time.time() + 2.0
+            self.show_bubble('背景分析中…', sub='會在分析完成後開啟分析結果', hold=3.0)
             self.request_scan('manual')
-            C.log(self.cfg, 'pet menu: request background scan')
+            C.log(self.cfg, 'pet menu: request background scan (auto open page after)')
             event(self.cfg, 'menu_scan')
-        elif cid == 1009:
-            self.auto_open = not self.auto_open
-            self.p['auto_open_page_after_scan'] = self.auto_open
-            if self.auto_open:
-                self.sfx('happy')
-            C.log(self.cfg, 'pet menu: auto_open_page_after_scan=%s' % self.auto_open)
-            event(self.cfg, 'menu_auto_open', enabled=self.auto_open)
         elif cid == 1010:
             # 已從選單移除（與「開啟分析網頁」重複）；保留指令以相容舊呼叫，
             # 現在這條路徑只作為 serve 起不來時的自動降級（見 _serve_open）。
@@ -1763,8 +1772,7 @@ class PetApp:
         event(self.cfg, 'scan_requested', reason=reason)
 
     def request_page(self, reason='manual'):
-        if not self.auto_open and reason != 'manual':
-            return          # D7「只通知不開頁」開關；手動點選單永遠可用
+        # 分析完就是要看結果：不再有「只通知不開頁」的開關（2026-11-26 移除）
         self.page_reason = reason
         self.page_req.set()
         event(self.cfg, 'page_requested', reason=reason)
@@ -2128,6 +2136,7 @@ class PetApp:
             txt = '清理結果：%s' % (st or '未知')
         sub = ('剩餘 %.2f%%' % float(free)) if free is not None else ''
         self.show_bubble(txt, sub=sub, hold=6.0)
+        self.notice_block_until = time.time() + 6.0   # 別讓「分析中」蓋掉清理結果
         self.sfx('alert' if st == 'ABORTED' else 'happy')
         event(self.cfg, 'delete_done', status=st,
               removed=last.get('fully_removed'), partial=last.get('partial'),
@@ -2167,6 +2176,18 @@ class PetApp:
                 self.clean_seen_ts = ts
                 self.clean_seen_seq = seq
                 self._announce_delete(last)
+
+        # 手動背景分析期間持續提示：全盤分析要跑幾分鐘，只閃一次 3 秒沒人看得到。
+        # 優先序：清理進度／清理結果 > 分析提示（不要蓋掉剛播完的結果）。
+        # 內容沒變就只延長顯示時間，不要每秒重繪（重繪會讓文字看起來在閃）。
+        if (self.scan_hint and self.scan_busy.locked()
+                and time.time() < self.scan_hint_until
+                and not prog and time.time() >= self.notice_block_until):
+            if self.bubble_text != self.scan_hint:
+                self.show_bubble(self.scan_hint,
+                                 sub='會在分析完成後開啟分析結果', hold=2.5)
+            else:
+                self.bubble_until = max(self.bubble_until, time.time() + 2.5)
 
     # ---------- 背景 worker（F7/F9/F10） ----------
     def maybe_weekly(self, cfg, disk=None, now=None):
@@ -2243,13 +2264,26 @@ class PetApp:
                   elapsed_ms=int((time.time() - t0) * 1000))
             # F10：警示／手動分析完成後開頁；週一僅在仍低於門檻時開頁
             if kind in ('alert', 'manual') or level == 'alert':
+                # 先講「完成了、正在開結果」，開頁本身要幾百毫秒，使用者才不會
+                # 覺得按了分析卻什麼都沒發生
+                self.scan_hint = ''
+                self.scan_hint_until = 0.0
+                self.notice_block_until = time.time() + 6.0
+                self.show_bubble('分析完成', sub='正在開啟分析結果…', hold=6.0)
                 self.request_page(kind)
             elif level == 'warn' and cfg['alert'].get('notify_on_warn_pct'):
                 C.write_notice(cfg, disk, '桌寵背景分析後介於 2%~10%')
         except Exception as ex:
             C.log(self.cfg, 'pet scan failed reason=%s: %s' % (kind, ex))
             event(self.cfg, 'scan_failed', reason=kind, ok=False)
+            if kind == 'manual':
+                self.scan_hint = ''
+                self.scan_hint_until = 0.0
+                self.show_bubble('分析失敗', sub='詳見日誌', hold=5.0)
         finally:
+            if kind == 'manual':            # 任何結束路徑都不要留下「分析中」提示
+                self.scan_hint = ''
+                self.scan_hint_until = 0.0
             self.scan_busy.release()
 
     def _browser_open(self, url):
@@ -2581,10 +2615,16 @@ def cmd_selftest(cfg):
                                     ('GuardServer', '_ACTIVE_SERVER'))
                and all(hasattr(C.GuardServer, k) for k in ('start', 'close')), ''))
     ok.append(('F10 config',
-               isinstance(p.get('auto_open_page_after_scan'), bool)
-               and int(p['serve_idle_close_sec']) >= 30,
-               'auto_open=%s idle=%ss'
-               % (p.get('auto_open_page_after_scan'), p.get('serve_idle_close_sec'))))
+               int(p['serve_idle_close_sec']) >= 30
+               and 1009 not in [c for c, _l in PetApp.MENU]
+               and 1009 not in [c for v in PetApp.SUBMENU.values() for c, _l in v],
+               'idle=%ss auto-open=always'
+               % p.get('serve_idle_close_sec')))
+    # 2026-11-26：「查看日誌」收進系統設置最後一項；「分析後自動開頁」已移除
+    ok.append(('menu log in settings',
+               bool(PetApp.SUBMENU.get(2000)) and PetApp.SUBMENU[2000][-1][0] == 1003
+               and 1003 not in [c for c, _l in PetApp.MENU],
+               'settings last = 查看日誌'))
     ok.append(('B5/B6 progress API', all(hasattr(C, k) for k in
                                          ('read_progress', 'read_last_delete',
                                           'progress_running', 'progress_path',
