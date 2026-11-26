@@ -1,13 +1,13 @@
 @echo off
-REM 手動啟動 cdisk-guard 背景守護（不寫入開機登錄、不改系統設定）
-REM 用 pythonw.exe 啟動，完全無主控台視窗。
+chcp 65001 >nul
+REM DiskGuard 背景守護啟動入口（手動；不寫入開機登錄、不改系統設定）
+REM 背景守護沒有視窗，啟動後只會在 data\cdisk-guard.log 留紀錄——這是正常的。
+REM 判斷邏輯都在 scripts\launch.py：鎖被佔用時會說明是誰在跑、要不要接手。
 setlocal
-set "PYW=C:\Users\Administrator\.workbuddy\binaries\python\versions\3.13.12\pythonw.exe"
-set "CTL=%~dp0scripts\cdiskctl.py"
-if not exist "%PYW%" (
-  echo [ERROR] pythonw.exe not found: %PYW%
-  exit /b 1
-)
-start "" "%PYW%" "%CTL%" watch
-echo cdisk-guard watch started. Log: %~dp0data\cdisk-guard.log
+set "PY=C:\Users\Administrator\.workbuddy\binaries\python\versions\3.13.12\python.exe"
+if not exist "%PY%" set "PY=python"
+
+"%PY%" "%~dp0scripts\launch.py" guard
+if errorlevel 1 pause
+
 endlocal

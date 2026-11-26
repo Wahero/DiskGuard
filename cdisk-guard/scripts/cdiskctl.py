@@ -1430,32 +1430,279 @@ def run_weekly(cfg, state, disk, reason):
 
 
 # ---------------------------------------------------------------- watch
-def acquire_lock(cfg):
-    """Windows 檔案鎖，行程結束自動釋放，避免多重守護。"""
-    import msvcrt
-    p = os.path.join(out_dir(cfg), 'watch.lock')
-    f = open(p, 'a+b')
-    f.seek(0, 2)
-    if f.tell() == 0:
-        f.write(b'0')
-    f.seek(0)
+LOCK_OWNER_NAME = 'watch.owner.json'
+
+
+def lock_owner_path(cfg):
+    return os.path.join(out_dir(cfg), LOCK_OWNER_NAME)
+
+
+def pid_alive(pid):
+    """PID 是否還活著。
+
+    注意：Windows 上 **不能用 `os.kill(pid, 0)`** —— Python 對非 CTRL_* 的訊號
+    直接呼叫 TerminateProcess，等於把對方殺掉。只能用 OpenProcess + 等 0 秒。
+    """
     try:
-        msvcrt.locking(f.fileno(), msvcrt.LK_NBLCK, 1)
-        return f
-    except OSError:
-        f.close()
+        k32 = ctypes.WinDLL('kernel32', use_last_error=True)
+        h = k32.OpenProcess(0x00100000, False, int(pid))   # SYNCHRONIZE
+        if not h:
+            return False
+        try:
+            return k32.WaitForSingleObject(h, 0) == 0x102   # WAIT_TIMEOUT
+        finally:
+            k32.CloseHandle(h)
+    except Exception:
+        return False
+
+
+def proc_start_ts(pid):
+    """取得行程建立時間（epoch 秒）；取不到回 0。用來防 PID 被重用時殺錯人。"""
+    try:
+        k32 = ctypes.WinDLL('kernel32', use_last_error=True)
+        h = k32.OpenProcess(0x1000, False, int(pid))       # QUERY_LIMITED_INFORMATION
+        if not h:
+            return 0.0
+        try:
+            c, e, k, u = (wintypes.FILETIME() for _ in range(4))
+            if not k32.GetProcessTimes(h, ctypes.byref(c), ctypes.byref(e),
+                                       ctypes.byref(k), ctypes.byref(u)):
+                return 0.0
+            ft = (c.dwHighDateTime << 32) | c.dwLowDateTime
+            return ft / 1e7 - 11644473600.0
+        finally:
+            k32.CloseHandle(h)
+    except Exception:
+        return 0.0
+
+
+def write_lock_owner(cfg, mode='watch'):
+    """把鎖的持有者寫進 watch.owner.json，讓啟動器能講清楚「誰在跑」。"""
+    _write_json_atomic(lock_owner_path(cfg), {
+        'pid': os.getpid(),
+        'mode': mode,
+        'exe': sys.executable,
+        'started_at': now_str(),
+        'started_ts': time.time(),
+    })
+
+
+def read_lock_owner(cfg):
+    """讀持有者；行程已死視為沒有（殘留紀錄不該阻止下次啟動）。
+
+    舊版行程（1.0.3 以前）不會寫 owner 檔，因此再退一步用 state.json 反推；
+    但只有「確認該 PID 真的擁有桌寵視窗」才採信，避免 PID 被重用時殺錯人。
+    """
+    d = read_json_quiet(lock_owner_path(cfg))
+    if isinstance(d, dict) and d.get('pid') and pid_alive(d['pid']):
+        # 有紀錄但鎖沒人握著 = 上一次沒收乾淨的殘留，清掉免得顯示「在執行」
+        if lock_is_busy(cfg):
+            return d
+        clear_lock_owner(cfg)
         return None
+    st = read_state(cfg) or {}
+    pid = (st.get('pet') or {}).get('pid')
+    if pid and pid_alive(pid) and lock_is_busy(cfg) and _pid_owns_pet_window(pid):
+        return {'pid': int(pid), 'mode': 'pet', 'source': 'state',
+                'started_at': (st.get('pet') or {}).get('last_heartbeat')}
+    return None
+
+
+def _pid_owns_pet_window(pid):
+    u = ctypes.WinDLL('user32', use_last_error=True)
+    hit = []
+
+    @ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+    def cb(h, _l):
+        p = wintypes.DWORD()
+        u.GetWindowThreadProcessId(h, ctypes.byref(p))
+        if p.value == int(pid):
+            cls = ctypes.create_unicode_buffer(64)
+            u.GetClassNameW(h, cls, 64)
+            if cls.value == 'DiskGuardPetClass':
+                hit.append(h)
+        return True
+
+    u.EnumWindows(cb, 0)
+    return bool(hit)
+
+
+def clear_lock_owner(cfg, only_pid=None):
+    """清掉持有者紀錄。帶 only_pid 時只清自己的，避免誤刪別人的。"""
+    if only_pid is not None:
+        d = read_json_quiet(lock_owner_path(cfg))
+        if isinstance(d, dict) and d.get('pid') not in (None, only_pid):
+            return
+    try:
+        os.remove(lock_owner_path(cfg))
+    except OSError:
+        pass
+
+
+def lock_is_busy(cfg):
+    """目前有沒有人佔用鎖。
+
+    鎖改成「獨佔開檔」語意：只要有別的行程握著 handle，這裡就開不起來 = 忙。
+    舊版用 msvcrt 位元組鎖時，實測會出現「`rb` 開得起來、`r+b` 被拒」的模糊狀態，
+    讓判斷變成靠猜；獨佔開檔沒有這種中間態。
+    """
+    lock = _open_exclusive(lock_path(cfg))
+    if not lock:
+        return True
+    lock.close()
+    return False
+
+
+def lock_path(cfg):
+    return os.path.join(out_dir(cfg), 'watch.lock')
+
+
+# 獨佔開檔鎖：CreateFileW 的 share mode 給 0，只要有別的行程握著 handle 就失敗。
+# 行程結束時 kernel 自動關閉 handle，不會留下死鎖。
+class _FileLock:
+    def __init__(self, h):
+        self.h = h
+
+    def close(self):
+        if self.h:
+            try:
+                ctypes.WinDLL('kernel32', use_last_error=True).CloseHandle(self.h)
+            except Exception:
+                pass
+            self.h = None
+
+
+def _open_exclusive(path):
+    """獨佔開檔；成功回 _FileLock，被佔用／失敗回 None。"""
+    try:
+        k32 = ctypes.WinDLL('kernel32', use_last_error=True)
+        k32.CreateFileW.restype = wintypes.HANDLE
+        k32.CreateFileW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD,
+                                    wintypes.DWORD, ctypes.c_void_p,
+                                    wintypes.DWORD, wintypes.DWORD,
+                                    wintypes.HANDLE]
+        GENERIC_READ_WRITE = 0x80000000 | 0x40000000
+        OPEN_ALWAYS = 4
+        h = k32.CreateFileW(str(path), GENERIC_READ_WRITE, 0, None,
+                            OPEN_ALWAYS, 0x80, None)   # 0x80 = FILE_ATTRIBUTE_NORMAL
+        if not h or h == wintypes.HANDLE(-1).value:
+            return None
+        return _FileLock(h)
+    except Exception:
+        return None
+
+
+def _post_close_to_pid(pid):
+    """對指定行程的桌寵視窗送 WM_CLOSE，讓它自己收尾（移除托盤、存檔）。"""
+    WM_CLOSE = 0x0010
+    u = ctypes.WinDLL('user32', use_last_error=True)
+    found = []
+
+    @ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+    def cb(h, _l):
+        p = wintypes.DWORD()
+        u.GetWindowThreadProcessId(h, ctypes.byref(p))
+        if p.value == int(pid):
+            cls = ctypes.create_unicode_buffer(64)
+            u.GetClassNameW(h, cls, 64)
+            if cls.value == 'DiskGuardPetClass':
+                found.append(h)
+        return True
+
+    u.EnumWindows(cb, 0)
+    for h in found:
+        u.PostMessageW(h, WM_CLOSE, 0, 0)
+    return len(found)
+
+
+def stop_owner(cfg, owner=None, timeout=6.0):
+    """停止目前持有鎖的行程。回傳 (ok, reason)。
+
+    安全檢查：PID 還要活著、且行程建立時間與 owner 記錄相符（±5 秒），
+    避免 PID 被系統重用時殺到無關程式。桌寵先送 WM_CLOSE 讓它正常退出，
+    背景守護沒有視窗，直接終止。
+    """
+    owner = owner or read_lock_owner(cfg)
+    if not owner:
+        return False, 'no owner'
+    pid = int(owner.get('pid') or 0)
+    if not pid_alive(pid):
+        clear_lock_owner(cfg, only_pid=pid)
+        return True, 'already gone'
+    started, real = float(owner.get('started_ts') or 0), proc_start_ts(pid)
+    if started and real and abs(real - started) > 5:
+        return False, 'pid 已被重用（start %.0f vs %.0f）' % (real, started)
+    if str(owner.get('mode')) == 'pet':
+        _post_close_to_pid(pid)
+        for _ in range(int(timeout * 10)):
+            if not pid_alive(pid):
+                return True, 'closed'
+            time.sleep(0.1)
+    try:
+        k32 = ctypes.WinDLL('kernel32', use_last_error=True)
+        h = k32.OpenProcess(0x0001, False, pid)            # PROCESS_TERMINATE
+        if not h:
+            return False, 'OpenProcess 失敗'
+        try:
+            k32.TerminateProcess(h, 1)
+        finally:
+            k32.CloseHandle(h)
+    except Exception as ex:
+        return False, str(ex)
+    for _ in range(int(timeout * 10)):
+        if not pid_alive(pid):
+            return True, 'terminated'
+        time.sleep(0.1)
+    return False, '仍在執行'
+
+
+def acquire_lock(cfg, mode='watch'):
+    """取得獨佔鎖（全機一份），避免桌寵與背景守護同時存在。
+
+    以前用 msvcrt.locking 位元組鎖，而 `open(..., 'a+b')` 沒有包例外——實測舊版
+    守護持鎖時，第二個行程連開檔都會被拒（PermissionError），於是 pet.py 直接
+    traceback 死在 pythonw 的黑洞裡，使用者只看到視窗一閃。現在改成獨佔開檔，
+    拿不到就明確回 None，由呼叫端說明原因。
+
+    取得鎖後把「誰佔用」寫進 watch.owner.json，衝突時才講得出是桌寵還是守護在跑。
+    """
+    try:
+        lock = _open_exclusive(lock_path(cfg))
+    except Exception:
+        return None
+    if not lock:
+        return None
+    try:
+        write_lock_owner(cfg, mode)
+    except Exception:
+        pass
+    return lock
 
 
 def cmd_watch(cfg, once=False, interval=None, no_alert=False, force_alert=False,
               config_path=None, budget=None):
-    lock = acquire_lock(cfg)
+    lock = acquire_lock(cfg, mode='watch')
     if not lock:
-        emit('watch: another instance is already running, exit')
+        own = read_lock_owner(cfg) or {}
+        if own:
+            msg = ('watch: DiskGuard 已在執行（PID %s，模式 %s），結束本次啟動'
+                   % (own.get('pid'), own.get('mode')))
+        else:
+            msg = 'watch: 已有另一個 DiskGuard 佔用鎖（讀不到擁有者），結束本次啟動'
+        emit(msg)
+        log(cfg, msg)
         return 2
     iv = interval or cfg['alert'].get('check_interval_sec', 300)
     log(cfg, 'watch started interval=%ss once=%s' % (iv, once))
     try:
+        # 順手在狀態檔記下自己，方便「誰在跑」用 --health 就看出來
+        try:
+            st0 = read_state(cfg)
+            st0['watch'] = {'pid': os.getpid(), 'started_at': now_str(),
+                            'started_ts': time.time(), 'interval_sec': iv}
+            write_state(cfg, st0)
+        except Exception:
+            pass
         while True:
             # 每次循環重讀設定，改設定不需重啟；但保留 CLI 覆蓋值
             cfg = load_config(config_path) if config_path else load_config()
@@ -1478,6 +1725,10 @@ def cmd_watch(cfg, once=False, interval=None, no_alert=False, force_alert=False,
                 break
             time.sleep(iv)
     finally:
+        try:
+            clear_lock_owner(cfg, only_pid=os.getpid())
+        except Exception:
+            pass
         try:
             lock.close()
         except Exception:

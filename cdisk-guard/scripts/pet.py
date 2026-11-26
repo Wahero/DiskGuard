@@ -2122,10 +2122,16 @@ class PetApp:
 
     # ---------- 生命週期 ----------
     def run(self):
-        lock = C.acquire_lock(self.cfg)
+        lock = C.acquire_lock(self.cfg, mode='pet')
         if not lock:
-            C.log(self.cfg, 'pet: another instance is already running, exit')
-            event(self.cfg, 'lock_busy', ok=False)
+            own = C.read_lock_owner(self.cfg) or {}
+            if own:
+                msg = ('pet: 已有 DiskGuard 在執行（PID %s，模式 %s），桌寵未啟動'
+                       % (own.get('pid'), own.get('mode')))
+            else:
+                msg = 'pet: 已有另一個 DiskGuard 佔用鎖（讀不到擁有者），桌寵未啟動'
+            C.log(self.cfg, msg)
+            event(self.cfg, 'lock_busy', ok=False, owner=own.get('pid'))
             return 2
         try:
             self.alive = True
@@ -2195,6 +2201,10 @@ class PetApp:
                 pass
             C.log(self.cfg, 'pet stopped')
             event(self.cfg, 'exit')
+            try:
+                C.clear_lock_owner(self.cfg, only_pid=os.getpid())
+            except Exception:
+                pass
             lock.close()
         return 0
 
