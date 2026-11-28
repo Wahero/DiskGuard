@@ -2207,20 +2207,32 @@ def weekly_should_run(cfg, state, disk, now=None):
     return True, 'cpu idle %.1f%%' % cpu
 
 
-def run_weekly(cfg, state, disk, reason):
+def run_weekly(cfg, state, disk, reason, state_lock=None):
     # 週期分析是「產生一份完整報告」，所以掃描範圍內的碟都要掃；
     # 監控（警示）只看 monitor_drives，兩者刻意分開。
     scans = scan_all(cfg, verbose=True)
     do_report(cfg, scans)
     summary = merge_scans(scans)
     level = decide_notify(cfg, disk)
-    sd = state_for(state, cfg['drive'])
-    sd['last_weekly_date'] = datetime.date.today().isoformat()
-    sd['last_weekly_ts'] = time.time()
-    sd['last_weekly_status'] = level      # 事後可查「那次分析做了沒、結論是什麼」
-    sd['last_weekly_reason'] = reason
-    sd['last_scan_ts'] = time.time()
-    write_state(cfg, state)
+
+    def commit_state():
+        # 掃描可能跑很久；以磁碟上的最新狀態為底再合併，避免覆蓋掃描期間
+        # 桌寵剛寫入的位置、心跳或使用者設定。呼叫方可提供鎖，讓讀／寫／合併
+        # 成為短臨界區，但絕不能拿著鎖做 scan_all／do_report。
+        latest = read_state(cfg) or state
+        sd = state_for(latest, cfg['drive'])
+        sd['last_weekly_date'] = datetime.date.today().isoformat()
+        sd['last_weekly_ts'] = time.time()
+        sd['last_weekly_status'] = level  # 事後可查「那次分析做了沒、結論是什麼」
+        sd['last_weekly_reason'] = reason
+        sd['last_scan_ts'] = time.time()
+        write_state(cfg, latest)
+
+    if state_lock is None:
+        commit_state()
+    else:
+        with state_lock:
+            commit_state()
     log(cfg, 'weekly analysis done: drives=%s files=%d elapsed=%ss pct=%.2f level=%s reason=%s' %
         (','.join(drive_key(d) for d in summary['drives']), summary['files_seen'],
          summary['elapsed_sec'], disk['free_pct'], level, reason))

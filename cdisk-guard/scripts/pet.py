@@ -19,9 +19,9 @@ Phase 2（TC-09～TC-18、TC-21）：
 明確不做：不改開機排程（Phase 3 另行處理）、桌寵控制選單沒有刪除／清回收站／改白名單；
 分析結果產生的網頁沿用既有 token＋confirm 雙防護，pet 本身不呼叫 do_delete。
 
-與 cdiskctl.py 的關係：只用既有 load_config/disk_info/log/read_state/write_state/
+與 cdiskctl.py 的關係：使用既有 load_config/disk_info/log/read_state/write_state/
 acquire_lock/out_dir/cmd_watch/do_scan/do_report/GuardServer/weekly_should_run/
-run_weekly/decide_notify/write_notice，不修改其任何一行。
+decide_notify/write_notice；run_weekly 另接收 state_lock，讓長時間掃描不阻塞 UI。
 """
 import os
 import sys
@@ -2285,18 +2285,12 @@ class PetApp:
             if kind == 'weekly':
                 with self.state_lock:
                     st = C.read_state(cfg) or {}
-                    level, scan = C.run_weekly(cfg, st, disk, 'pet weekly monitor')
-                # run_weekly 只寫 last_weekly_date；把結果等級與時間也留下來，
-                # 事後能判斷「那次分析到底做了沒、結論是什麼」（B7）
-                try:
-                    with self.state_lock:
-                        st2 = C.read_state(cfg) or {}
-                        sd = C.state_for(st2, cfg['drive'])
-                        sd['last_weekly_status'] = level
-                        sd['last_weekly_ts'] = time.time()
-                        C.write_state(cfg, st2)
-                except Exception:
-                    pass
+                # 全碟掃描可能持續數分鐘，絕不能持有 state_lock：UI 的
+                # WM_TIMER_BEAT→save_state 需要同一把鎖，否則整個訊息迴圈
+                # 會被阻塞，Windows 判成「應用程式沒有回應」，左右鍵也失效。
+                # run_weekly 只在掃描完成後，於 state_lock 內合併最新狀態。
+                level, scan = C.run_weekly(cfg, st, disk, 'pet weekly monitor',
+                                           state_lock=self.state_lock)
             else:
                 # 一份綜合報告：掃描範圍內每顆碟都掃，再合成一頁
                 scans = C.scan_all(cfg)
@@ -2633,6 +2627,53 @@ def cmd_health(cfg):
     return 0
 
 
+def _selftest_weekly_ui_lock():
+    """回歸測試：週分析掃描期間，UI 的 state_lock 必須仍可取得。
+
+    舊實作把 run_weekly 整段包在 state_lock 內；UI 的 heartbeat/save_state
+    會被阻塞數分鐘，Windows 隨即判定應用程式無回應，左右鍵也會失效。
+    """
+    app = object.__new__(PetApp)
+    app.cfg = {'drive': 'C:\\'}
+    app.state_lock = threading.RLock()
+    app.scan_busy = threading.Lock()
+    app.last_scan_ts = 0.0
+    app.sound = False
+    app.scan_hint = ''
+    app.scan_hint_until = 0.0
+    app.notice_block_until = 0.0
+    app.sfx = lambda _name: None
+    acquired = []
+
+    def fake_run_weekly(_cfg, _state, _disk, _reason, state_lock=None):
+        def probe():
+            got = state_lock.acquire(timeout=0.5)
+            acquired.append(got)
+            if got:
+                state_lock.release()
+
+        t = threading.Thread(target=probe)
+        t.start()
+        t.join()
+        return 'none', {'files_seen': 0, 'elapsed_sec': 0, 'truncated': False}
+
+    names = ('disk_info', 'read_state', 'run_weekly', 'log')
+    original = {name: getattr(C, name) for name in names}
+    original_event = event
+    try:
+        C.disk_info = lambda _drive: {'free_pct': 50.0}
+        C.read_state = lambda _cfg: {}
+        C.run_weekly = fake_run_weekly
+        C.log = lambda _cfg, _msg: None
+        globals()['event'] = lambda _cfg, _name, **_kw: None
+        app._run_scan_flow(app.cfg, 'weekly')
+    finally:
+        for name, value in original.items():
+            setattr(C, name, value)
+        globals()['event'] = original_event
+    return acquired == [True]
+
+
 def cmd_selftest(cfg):
     ok = []
     try:
@@ -2684,6 +2725,11 @@ def cmd_selftest(cfg):
     ok.append(('F9 scan API', all(hasattr(C, k) for k in
                                   ('do_scan', 'do_report', 'weekly_should_run',
                                    'run_weekly', 'decide_notify', 'write_notice')), ''))
+    try:
+        ok.append(('weekly UI lock', _selftest_weekly_ui_lock(),
+                   'state_lock free during scan'))
+    except Exception as ex:
+        ok.append(('weekly UI lock', False, str(ex)))
     ok.append(('F10 serve API', all(hasattr(C, k) for k in
                                     ('GuardServer', '_ACTIVE_SERVER'))
                and all(hasattr(C.GuardServer, k) for k in ('start', 'close')), ''))
