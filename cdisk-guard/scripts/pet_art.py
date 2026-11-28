@@ -53,6 +53,48 @@ def _grad(stops, t):
     return stops[-1][1]
 
 
+def _ear_path(start, curves, steps=12):
+    """三次 Bézier 取樣；讓耳尖與耳廓不再是死板直線三角形。"""
+    pts = [start]
+    p0 = start
+    for c1, c2, p3 in curves:
+        for i in range(1, steps + 1):
+            t = i / float(steps)
+            u = 1.0 - t
+            x = (u * u * u * p0[0] + 3 * u * u * t * c1[0] +
+                 3 * u * t * t * c2[0] + t * t * t * p3[0])
+            y = (u * u * u * p0[1] + 3 * u * u * t * c1[1] +
+                 3 * u * t * t * c2[1] + t * t * t * p3[1])
+            pts.append((x, y))
+        p0 = p3
+    return pts
+
+
+# 固定耳廓與漸層只算一次；右耳仍以 x=50 鏡像，避免動作切換時跳形。
+_EAR_OUTER_PATH = _ear_path((17.8, 20.2), [
+    ((19.6, 10.5), (24.0, 3.9), (28.0, 2.8)),
+    ((31.2, 3.8), (36.2, 10.5), (40.0, 19.8)),
+    ((36.0, 22.0), (22.0, 22.6), (17.8, 20.2)),
+])
+_EAR_INNER_PATH = _ear_path((21.8, 17.6), [
+    ((23.0, 11.0), (25.7, 6.8), (28.2, 6.6)),
+    ((30.5, 7.2), (34.2, 11.8), (36.2, 17.4)),
+    ((31.5, 19.0), (26.0, 19.2), (21.8, 17.6)),
+])
+_EAR_OUTER_GRAD = ((0.0, GOLD_HI), (0.42, GOLD), (1.0, GOLD_LO))
+_EAR_INNER_GRAD = ((0.0, (88, 58, 39)),
+                   (0.55, (51, 32, 24)),
+                   (1.0, (20, 15, 13)))
+
+
+def _ear_outer_grad(t):
+    return _grad(_EAR_OUTER_GRAD, t)
+
+
+def _ear_inner_grad(t):
+    return _grad(_EAR_INNER_GRAD, t)
+
+
 class Canvas:
     """RGBA 浮點畫布（0..1，非預乘），輸出時轉 BGRA bytes。"""
 
@@ -66,6 +108,12 @@ class Canvas:
             return
         i = (y * self.w + x) * 4
         p = self.px
+        if a == 1.0:
+            p[i] = rgb[0] / 255.0
+            p[i + 1] = rgb[1] / 255.0
+            p[i + 2] = rgb[2] / 255.0
+            p[i + 3] = 1.0
+            return
         da = p[i + 3]
         na = a + da * (1.0 - a)
         if na <= 0.0:
@@ -181,8 +229,9 @@ class Canvas:
             dy = (y + 0.5 - cy) / ry
             if abs(dy) >= 1.0:
                 continue
-            xs = max(0, int(cx - rx))
-            xe = min(self.w - 1, int(cx + rx))
+            half = rx * math.sqrt(max(0.0, 1.0 - dy * dy))
+            xs = max(0, int(math.floor(cx - half)))
+            xe = min(self.w - 1, int(math.ceil(cx + half)))
             for x in range(xs, xe + 1):
                 dx = (x + 0.5 - cx) / rx
                 d = math.sqrt(dx * dx + dy * dy)
@@ -251,23 +300,32 @@ def render(frame='idle', size=96, tick=0, scale=1.0, eye=None, mouth=None):
     eye_rgb = RED_EYE if alert else AMBER
     eye_hot = (255, 96, 72) if alert else AMBER_HOT
 
-    # 落地陰影
-    cv.ellipse(P(50), P(94.5), P(27), P(3.4), (0, 0, 0), 0.30)
-    cv.ellipse(P(50), P(94.0), P(17), P(2.2), (0, 0, 0), 0.22)
+    # 落地陰影；抓起時縮小、變淡，強化「被拎起來」的感覺。
+    grabbed = frame == 'drag'
+    cv.ellipse(P(50), P(94.5), P(20 if grabbed else 27),
+               P(2.4 if grabbed else 3.4), (0, 0, 0), 0.18 if grabbed else 0.30)
+    cv.ellipse(P(50), P(94.0), P(12 if grabbed else 17),
+               P(1.5 if grabbed else 2.2), (0, 0, 0), 0.12 if grabbed else 0.22)
 
-    # ---- 貓耳（金邊＋暗色內芯），畫在頭後面
+    # ---- 貓耳（圓弧機械耳殼＋柔軟內耳），畫在頭後面
+    # 左耳標準輪廓；右耳以 x=50 鏡像，確保動作切換時不會跳形。
     for sx in (-1, 1):
-        bx = 50 + sx * 21.0
-        outer = [(bx - sx * 11.0, 21.0), (bx + sx * 1.4, 3.4),
-                 (bx + sx * 11.5, 20.0)]
-        outer = [(P(p[0]), P(p[1])) for p in outer]
-        cv.poly(outer, None, 1.0,
-                grad=lambda t: _grad([(0.0, GOLD_HI), (0.45, GOLD), (1.0, GOLD_LO)], t))
-        inner = [(bx - sx * 7.2, 19.2), (bx + sx * 1.0, 7.0),
-                 (bx + sx * 7.6, 18.6)]
-        inner = [(P(p[0]), P(p[1])) for p in inner]
-        cv.poly(inner, None, 0.96,
-                grad=lambda t: _grad([(0.0, (58, 46, 30)), (1.0, (18, 15, 12))], t))
+        mirror = (lambda p: (p[0], p[1])) if sx == -1 else \
+                 (lambda p: (100.0 - p[0], p[1]))
+        outer = [mirror(p) for p in _EAR_OUTER_PATH]
+        # 深一階的外框讓小尺寸也有清晰輪廓，內層再保留金屬漸層。
+        cv.poly([(P(x), P(y)) for x, y in outer], GOLD_LO, 1.0)
+        cx, cy = (29.0 if sx == -1 else 71.0), 14.8
+        inset = [(cx + (x - cx) * 0.93, cy + (y - cy) * 0.91)
+                 for x, y in outer]
+        cv.poly([(P(x), P(y)) for x, y in inset], None, 1.0,
+                grad=_ear_outer_grad)
+        inner = [mirror(p) for p in _EAR_INNER_PATH]
+        cv.poly([(P(x), P(y)) for x, y in inner], None, 0.98,
+                grad=_ear_inner_grad)
+        # 內耳底部一點暖色反射，避免看起來像貼上的黑色紙片。
+        cv.ellipse(P(28.5 if sx == -1 else 71.5), P(17.2),
+                   P(4.0), P(1.1), (150, 92, 52), 0.16)
 
     # ---- 頭戴耳機橫樑（在頭後面露出一段）
     cv.rrect(P(17), P(20), P(83), P(27), P(3.5), None, 1.0,
@@ -310,6 +368,8 @@ def render(frame='idle', size=96, tick=0, scale=1.0, eye=None, mouth=None):
     cv.rrect(P(21.5), P(29.5), P(78.5), P(33.0), P(5), (0, 0, 0), 0.28)
 
     style = eye or _eye_style(frame, tick)
+    if frame == 'drag' and mouth is None:
+        mouth = 'o'
     ey = 45.2
 
     # 面罩底色（供「切半」用）：與面罩漸層完全一致，切完看不出接縫
@@ -419,16 +479,17 @@ def render(frame='idle', size=96, tick=0, scale=1.0, eye=None, mouth=None):
     cv.ellipse(P(61.5), P(80.0), P(3.2), P(3.2), None, 1.0,
                grad=lambda t: _grad([(0.0, GOLD_HI), (1.0, GOLD_LO)], t))
     cv.ellipse(P(61.5), P(80.0), P(1.7), P(1.7), (32, 26, 16), 0.95)
-    # 手臂（在身側外緣，露出手臂輪廓）
+    # 手臂（在身側外緣，露出手臂輪廓）；抓起時雙手略抬、外張。
     for sx in (-1, 1):
-        cx = 50 + sx * 30.2
-        cv.rrect(P(cx - 4.8), P(69.6), P(cx + 4.8), P(87.2), P(4.8), None, 1.0,
+        cx = 50 + sx * (32.0 if grabbed else 30.2)
+        ay0, ay1, hy = (65.8, 83.4, 83.8) if grabbed else (69.6, 87.2, 87.6)
+        cv.rrect(P(cx - 4.8), P(ay0), P(cx + 4.8), P(ay1), P(4.8), None, 1.0,
                  grad=lambda t: _grad([(0.0, (78, 86, 100)), (0.5, (48, 54, 64)),
                                        (1.0, (24, 27, 33))], t))
-        cv.rrect(P(cx - 4.8), P(69.6), P(cx + 4.8), P(87.2), P(4.8), GOLD, 0.22)
+        cv.rrect(P(cx - 4.8), P(ay0), P(cx + 4.8), P(ay1), P(4.8), GOLD, 0.22)
         # 手掌
-        cv.ellipse(P(cx), P(87.6), P(4.0), P(3.4), (30, 33, 39), 0.98)
-        cv.ellipse(P(cx), P(87.6), P(4.0), P(3.4), GOLD, 0.26, inner=0.58)
+        cv.ellipse(P(cx), P(hy), P(4.0), P(3.4), (30, 33, 39), 0.98)
+        cv.ellipse(P(cx), P(hy), P(4.0), P(3.4), GOLD, 0.26, inner=0.58)
     # 腳（與身體連在一起）
     for sx in (-1, 1):
         cx = 50 + sx * 10.5

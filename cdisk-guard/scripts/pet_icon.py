@@ -12,6 +12,8 @@ ICO 為標準 BMP-DIB 格式（32bpp＋AND mask），`LoadImageW` 可直接讀�
 import math
 import os
 import struct
+import tempfile
+import threading
 
 import pet_art
 
@@ -19,7 +21,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ASSETS = os.path.join(ROOT, 'assets')
 
 # 頭部裁切框（100×100 設計座標，x0,y0,x1,y1）：含貓耳尖到頸部
-HEAD_BOX = (4.0, 8.0, 96.0, 79.0)
+HEAD_BOX = (2.0, 0.0, 98.0, 80.0)
 # 渲染基準尺寸：先畫大圖再縮小，鋸齒與細節比直接畫小圖好
 SRC = 200
 
@@ -78,11 +80,26 @@ def _resize(src, sw, sh, dw, dh):
     return out
 
 
+_SOURCES = {}
+_SOURCE_LOCK = threading.Lock()
+
+
+def _head_source(alert):
+    """每種造型只渲染一次 200px 源圖，之後各尺寸共用同一裁切結果。"""
+    key = bool(alert)
+    with _SOURCE_LOCK:
+        source = _SOURCES.get(key)
+        if source is None:
+            frame = 'alert' if key else 'idle'
+            full = pet_art.render(frame, SRC, 0)
+            source = _crop(full, SRC, HEAD_BOX)
+            _SOURCES[key] = source
+        return source
+
+
 def draw(n=64, alert=False):
     """回傳 n×n BGRA bytearray（上到下），內容為機械人頭。"""
-    frame = 'alert' if alert else 'idle'
-    full = pet_art.render(frame, SRC, 0)
-    part, cw, ch = _crop(full, SRC, HEAD_BOX)
+    part, cw, ch = _head_source(alert)
     k = min(n / float(cw), n / float(ch))
     tw, th = max(1, int(round(cw * k))), max(1, int(round(ch * k)))
     small = _resize(part, cw, ch, tw, th)
@@ -127,9 +144,20 @@ def generate():
     # 若只給 16 就會被系統再放大一次（發糊）。
     for name, alert in (('tray', False), ('tray-alert', True)):
         imgs = [(s, draw(s, alert)) for s in (64, 48, 40, 32, 24, 20, 16)]
+        data = _ico_bytes(imgs)
         p = os.path.join(ASSETS, name + '.ico')
-        with open(p, 'wb') as f:
-            f.write(_ico_bytes(imgs))
+        tmp = None
+        try:
+            fd, tmp = tempfile.mkstemp(prefix=name + '.', suffix='.tmp', dir=ASSETS)
+            with os.fdopen(fd, 'wb') as f:
+                f.write(data)
+            os.replace(tmp, p)
+        finally:
+            if tmp:
+                try:
+                    os.remove(tmp)
+                except OSError:
+                    pass
         paths.append(p)
     return paths
 

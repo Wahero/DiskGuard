@@ -23,8 +23,12 @@ import tempfile
 import threading
 import subprocess
 import ctypes
+import re
+import stat
 from ctypes import wintypes
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
+
+import dg_common as COM
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SCRIPTS = os.path.join(ROOT, 'scripts')
@@ -163,6 +167,9 @@ def classify(kind, name, path):
 
 
 # ---------------------------------------------------------------- 基礎工具
+STATE_LOCK = threading.RLock()
+
+
 def now_str():
     return datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
 
@@ -173,10 +180,10 @@ def load_config(path=None):
 
 
 def out_dir(cfg):
+    """只解析路徑，不在讀取路徑時反覆 makedirs；寫入端自行確保目錄。"""
     d = cfg['paths']['output_dir']
     if not os.path.isabs(d):
         d = os.path.join(ROOT, d)
-    os.makedirs(d, exist_ok=True)
     return d
 
 
@@ -355,13 +362,14 @@ def last_scope(cfg):
 
 
 def remember_scope(cfg, drives, stamp=None):
-    """記下這次分析了哪些碟（給網頁與下次開頁用）。"""
+    """記下這次分析了哪些碟；只在短臨界區內讀／合併／寫。"""
     try:
-        st = read_state(cfg)
-        st['last_scope'] = [norm_drive(d) for d in drives]
-        st['last_scope_ts'] = time.time()
-        st['last_scope_at'] = stamp or now_str()
-        write_state(cfg, st)
+        with STATE_LOCK:
+            st = read_state(cfg)
+            st['last_scope'] = [norm_drive(d) for d in drives]
+            st['last_scope_ts'] = time.time()
+            st['last_scope_at'] = stamp or now_str()
+            write_state(cfg, st)
     except Exception:
         pass
 
@@ -393,6 +401,7 @@ def emit(msg):
 def log(cfg, msg):
     line = '[%s] %s' % (now_str(), msg)
     try:
+        COM.ensure_dir(out_dir(cfg))
         with open(os.path.join(out_dir(cfg), cfg['paths']['log_filename']),
                   'a', encoding='utf-8') as f:
             f.write(line + '\n')
@@ -411,11 +420,7 @@ def read_state(cfg):
 
 
 def write_state(cfg, st):
-    p = os.path.join(out_dir(cfg), 'state.json')
-    tmp = p + '.tmp'
-    with open(tmp, 'w', encoding='utf-8') as f:
-        json.dump(st, f, ensure_ascii=False, indent=2)
-    os.replace(tmp, p)
+    COM.atomic_write_json(os.path.join(out_dir(cfg), 'state.json'), st)
 
 
 def state_for(st, drive):
@@ -468,6 +473,7 @@ def disk_info(drive=None):
         'drive': drive,
         'total_bytes': total.value,
         'free_bytes': free.value,
+        'used_bytes': total.value - free.value,
         'total_gb': round(t / GB, 2),
         'free_gb': round(f / GB, 2),
         'used_gb': round((t - f) / GB, 2),
@@ -476,7 +482,17 @@ def disk_info(drive=None):
     }
 
 
-def drive_inventory(cfg, scans=None):
+def _disk_cached(cache, drive):
+    """請求內共用磁碟查詢；cache 生命週期只限單次操作，避免跨請求陳舊。"""
+    if cache is None:
+        return disk_info(drive)
+    key = norm_drive(drive)
+    if key not in cache:
+        cache[key] = disk_info(key)
+    return cache[key]
+
+
+def drive_inventory(cfg, scans=None, disk_cache=None):
     """所有可處理磁碟的清單，標出哪幾顆「這次已分析」。
 
     網頁同時用兩份資訊：頁首只列已分析的碟（chips），「選擇磁碟」彈窗列全部
@@ -494,7 +510,7 @@ def drive_inventory(cfg, scans=None):
         row = {'drive': d, 'letter': drive_key(d),
                'scanned': d in scanned}
         try:
-            di = disk_info(d)
+            di = _disk_cached(disk_cache, d)
             row.update({'ok': True, 'total_gb': di['total_gb'],
                         'free_gb': di['free_gb'], 'used_gb': di['used_gb'],
                         'free_pct': di['free_pct'], 'checked_at': di['checked_at']})
@@ -510,7 +526,7 @@ def drive_inventory(cfg, scans=None):
     return rows
 
 
-def drive_summary(cfg, drives=None):
+def drive_summary(cfg, drives=None, disk_cache=None):
     """每顆碟的容量摘要，給桌寵用量面板與托盤用。
 
     讀不到的碟（外接碟拔掉、光碟機空槽）不拋例外，標成 ok=False——
@@ -521,7 +537,7 @@ def drive_summary(cfg, drives=None):
     for d in (drives or drive_list(cfg)):
         row = {'drive': d, 'letter': drive_key(d), 'current': d == cur}
         try:
-            di = disk_info(d)
+            di = _disk_cached(disk_cache, d)
             row.update({'ok': True, 'total_gb': di['total_gb'],
                         'free_gb': di['free_gb'], 'used_gb': di['used_gb'],
                         'free_pct': di['free_pct']})
@@ -531,7 +547,7 @@ def drive_summary(cfg, drives=None):
     return out
 
 
-def worst_monitor(cfg):
+def worst_monitor(cfg, disk_cache=None):
     """監控範圍內最緊張的那顆碟；讀不到就跳過（外接碟拔掉不該讓守護崩）。
 
     回傳 (disk_info, drive)。監控範圍預設只有 C:，所以單碟使用者行為不變。
@@ -539,14 +555,14 @@ def worst_monitor(cfg):
     best = None
     for d in monitor_drives(cfg):
         try:
-            di = disk_info(d)
+            di = _disk_cached(disk_cache, d)
         except OSError:
             continue
         if best is None or di['free_pct'] < best[0]['free_pct']:
             best = (di, d)
     if best:
         return best
-    return disk_info(cfg['drive']), cfg['drive']
+    return _disk_cached(disk_cache, cfg['drive']), cfg['drive']
 
 
 def _ft(v):
@@ -595,24 +611,30 @@ def empty_recycle_bin(drive=None):
 
 
 def recycle_bin_residual(drive=None):
-    """逐 SID 統計「本碟」回收站殘留（他人 SID 只回報、不清除）。"""
+    """逐 SID 統計「本碟」回收站殘留；單次 scandir/stat，不跟隨連結。"""
     base = os.path.join(norm_drive(drive) or system_drive(), '$Recycle.Bin')
     out = []
     try:
-        for sid in os.scandir(base):
-            if not sid.is_dir(follow_symlinks=False):
+        with os.scandir(base) as it:
+            sids = list(it)
+    except OSError:
+        return out
+    for sid in sids:
+        try:
+            if not sid.is_dir(follow_symlinks=False) or \
+                    sid.stat(follow_symlinks=False).st_file_attributes & 0x400:
                 continue
-            n, sz = 0, 0
-            for cur, dirs, files in os.walk(sid.path):
-                for fn in files:
-                    try:
-                        sz += os.stat(os.path.join(cur, fn)).st_size
-                        n += 1
-                    except OSError:
-                        pass
-            out.append({'sid': sid.name, 'files': n, 'mb': round(sz / MB, 1)})
-    except Exception:
-        pass
+        except OSError:
+            continue
+        n, sz, errors = 0, 0, []
+        for _fp, st in COM.walk_files_safe(
+                sid.path, on_error=lambda p, e: errors.append(str(p))):
+            n += 1
+            sz += st.st_size
+        row = {'sid': sid.name, 'files': n, 'mb': round(sz / MB, 1)}
+        if errors:
+            row['errors'] = len(errors)
+        out.append(row)
     return out
 
 
@@ -667,7 +689,9 @@ def do_scan(cfg, budget_sec=None, verbose=False):
     drive = cfg['drive']
     sc = cfg['scan']
     budget = budget_sec or sc.get('budget_sec', 600)
-    started = time.time()
+    started = time.monotonic()
+    deadline = started + float(budget)
+    entries_since_check = 0
     users = _list_users(drive)
     junk_map = {}
     for lab, rel in _junk_specs(drive, users):
@@ -680,6 +704,7 @@ def do_scan(cfg, budget_sec=None, verbose=False):
     files_seen, dirs_seen, truncated = 0, 0, False
     big_heap = []          # (size, path, mtime) 維持 top N
     big_min = float(sc.get('big_file_mb', 100)) * MB
+    top_n = max(1, int(sc.get('top_n', 40)))
 
     # 注意：'C:' 在 Windows 是「該磁碟的目前目錄」，必須用 'C:\' 才是根目錄
     root_path = drive if drive.endswith('\\') else drive + '\\'
@@ -687,10 +712,10 @@ def do_scan(cfg, budget_sec=None, verbose=False):
     # 若用 LIFO 深搜，會整段卡在單一子樹，導致 Users / Windows 完全沒被統計。
     # (路徑, 相對 parts, 繼承的垃圾點 bucket keys)
     queue = deque([(root_path, [], ())])
-    while queue:
+    while queue and not truncated:
         cur, parts, inherited_junk = queue.popleft()
         dirs_seen += 1
-        if dirs_seen % 500 == 0 and time.time() - started > budget:
+        if dirs_seen % 256 == 0 and time.monotonic() > deadline:
             truncated = True
             break
         low = '\\'.join(p.lower() for p in parts)
@@ -704,17 +729,26 @@ def do_scan(cfg, budget_sec=None, verbose=False):
                     keys.append(('useritem', parts[1], parts[2]))
                 if len(parts) >= 5 and parts[2].lower() == 'appdata' \
                         and parts[3].lower() in ('local', 'roaming'):
-                    keys.append(('appdata', parts[1], parts[3], parts[4]))
+                    akey = ('appdata', parts[1], parts[3], parts[4])
+                    keys.append(akey)
+                    paths['appdata'].setdefault(
+                        akey, os.path.join(drive, *parts[:5]))
                 if len(parts) >= 6 and parts[2].lower() == 'appdata' \
                         and parts[3].lower() == 'local' and parts[4].lower() == 'temp':
-                    keys.append(('temp', parts[1], parts[5]))
+                    tkey = ('temp', parts[1], parts[5])
+                    keys.append(tkey)
+                    paths['temp'].setdefault(
+                        tkey, os.path.join(drive, *parts[:6]))
         # 垃圾點標籤必須沿堆疊往下傳遞，子目錄內的檔案才會被計入
         junk_keys = inherited_junk
         if low in junk_map:
             jkey = ('junk', low)
             paths['junk'].setdefault(jkey, os.path.join(drive, *parts))
             junk_keys = inherited_junk + (jkey,)
-        keys += list(junk_keys)
+        keys.extend(junk_keys)
+        bucket_refs = [(k, agg[k[0]]) for k in keys]
+        root_bucket = agg['root']
+        root_files_key = ('root', '__ROOT_FILES__')
 
         try:
             it = os.scandir(cur)
@@ -724,54 +758,51 @@ def do_scan(cfg, budget_sec=None, verbose=False):
             continue
         with it:
             for e in it:
+                entries_since_check += 1
+                if entries_since_check >= 2048:
+                    entries_since_check = 0
+                    if time.monotonic() > deadline:
+                        truncated = True
+                        break
                 try:
-                    if e.is_dir(follow_symlinks=False):
-                        if sc.get('skip_reparse', True) and _is_reparse(e):
-                            continue
-                        queue.append((e.path, parts + [e.name], junk_keys))
-                        continue
-                    sz = e.stat(follow_symlinks=False).st_size
+                    # 目錄／檔案都只 stat 一次；mtime 只有真的進 top-N 才算。
+                    st = e.stat(follow_symlinks=False)
                 except OSError:
                     continue
+                if stat.S_ISDIR(st.st_mode):
+                    if sc.get('skip_reparse', True) and st.st_file_attributes & 0x400:
+                        continue
+                    queue.append((e.path, parts + [e.name], junk_keys))
+                    continue
+                sz = st.st_size
                 files_seen += 1
-                for k in keys:
-                    agg[k[0]][k] = agg[k[0]].get(k, 0) + sz
+                for k, bucket in bucket_refs:
+                    bucket[k] = bucket.get(k, 0) + sz
                 if not parts:
-                    # C:\ 根目錄的檔案（pagefile.sys / hiberfil.sys 等）不屬於任何子目錄
-                    agg['root'][('root', '__ROOT_FILES__')] = \
-                        agg['root'].get(('root', '__ROOT_FILES__'), 0) + sz
-                if sz >= big_min:
-                    try:
-                        mt = datetime.datetime.fromtimestamp(
-                            e.stat().st_mtime).strftime('%Y-%m-%d')
-                    except OSError:
-                        mt = '?'
-                    if len(big_heap) < sc.get('top_n', 40):
+                    # 根目錄檔案（pagefile.sys／hiberfil.sys 等）不屬於任何子目錄。
+                    root_bucket[root_files_key] = \
+                        root_bucket.get(root_files_key, 0) + sz
+                if sz >= big_min and (len(big_heap) < top_n or sz > big_heap[0][0]):
+                    mt = datetime.datetime.fromtimestamp(st.st_mtime).strftime('%Y-%m-%d')
+                    if len(big_heap) < top_n:
                         heapq.heappush(big_heap, (sz, e.path, mt))
-                    elif sz > big_heap[0][0]:
+                    else:
                         heapq.heapreplace(big_heap, (sz, e.path, mt))
-
-        # 為 appdata / temp bucket 補上真實路徑（目錄本身可能為空）
-        for k in keys:
-            if k[0] == 'appdata' and k not in paths['appdata'] and len(parts) >= 5:
-                paths['appdata'][k] = os.path.join(drive, *parts[:5])
-            elif k[0] == 'temp' and k not in paths['temp'] and len(parts) >= 6:
-                paths['temp'][k] = os.path.join(drive, *parts[:6])
 
     disk = disk_info(drive)
     scan = {
         'created': now_str(),
         'drive': drive,
-        'elapsed_sec': round(time.time() - started, 1),
+        'elapsed_sec': round(time.monotonic() - started, 1),
         'truncated': truncated,
         'files_seen': files_seen,
         'dirs_seen': dirs_seen,
         'denied_roots': sorted(denied),
         'users_found': users,
         'disk': disk,
-        'agg': {g: [{'key': list(k), 'mb': round(v / MB, 1)}
+        'agg': {g: [{'key': list(k), 'bytes': int(v), 'mb': round(v / MB, 1)}
                     for k, v in d.items()] for g, d in agg.items() if g != 'big'},
-        'big': [{'mb': round(s / MB, 1), 'path': p, 'mtime': m}
+        'big': [{'bytes': int(s), 'mb': round(s / MB, 1), 'path': p, 'mtime': m}
                 for s, p, m in sorted(big_heap, reverse=True)],
         'junk_paths': {k[1]: v for k, v in paths['junk'].items()},
         'appdata_paths': {'|'.join(k[1:]): v for k, v in paths['appdata'].items()},
@@ -784,18 +815,21 @@ def do_scan(cfg, budget_sec=None, verbose=False):
         try:
             with open(p, 'r', encoding='utf-8') as f:
                 old = json.load(f)
-            if not old.get('truncated') and old.get('files_seen', 0) > files_seen:
+            if not old.get('truncated'):
                 log(cfg, 'scan truncated at %d files; kept complete baseline (%d files)'
-                    % (files_seen, old['files_seen']))
+                    % (files_seen, old.get('files_seen', 0)))
                 old['kept_previous'] = True
+                old['scan_attempt'] = {
+                    'created': scan['created'], 'files_seen': files_seen,
+                    'dirs_seen': dirs_seen, 'elapsed_sec': scan['elapsed_sec'],
+                    'truncated': True,
+                }
                 if verbose:
                     emit('scan: kept complete baseline (new was truncated)')
                 return old
         except Exception:
             pass
-    with open(p + '.tmp', 'w', encoding='utf-8') as f:
-        json.dump(scan, f, ensure_ascii=False, indent=1)
-    os.replace(p + '.tmp', p)
+    COM.atomic_write_json(p, scan, indent=1)
     if verbose:
         emit('scan: files=%d dirs=%d elapsed=%.1fs truncated=%s -> %s'
              % (files_seen, dirs_seen, scan['elapsed_sec'], truncated, p))
@@ -809,22 +843,20 @@ def load_scan(cfg):
     否則會把 C 盤的清單當成 D 盤的結果（多碟最危險的錯誤）。
     """
     p = scan_path(cfg)
-    if not os.path.exists(p):
-        legacy = os.path.join(out_dir(cfg), 'scan.json')
-        if os.path.exists(legacy):
-            try:
-                with open(legacy, 'r', encoding='utf-8') as f:
-                    old = json.load(f)
-                if norm_drive(old.get('drive')) == norm_drive(cfg['drive']):
-                    return old
-            except Exception:
-                pass
-        return None
     try:
         with open(p, 'r', encoding='utf-8') as f:
             return json.load(f)
-    except Exception:
-        return None
+    except (OSError, ValueError):
+        pass
+    legacy = os.path.join(out_dir(cfg), 'scan.json')
+    try:
+        with open(legacy, 'r', encoding='utf-8') as f:
+            old = json.load(f)
+        if norm_drive(old.get('drive')) == norm_drive(cfg['drive']):
+            return old
+    except (OSError, ValueError, TypeError):
+        pass
+    return None
 
 
 def scan_is_stale(cfg, scan):
@@ -867,7 +899,7 @@ def load_scans(cfg, drives=None):
     return out
 
 
-def merge_scans(scans):
+def merge_scans(scans, disk_cache=None):
     """把多顆碟的 scan 併成一個「合計」摘要，給頁首 KPI 用。"""
     scans = scans or []
     out = {'count': len(scans), 'drives': [norm_drive(s.get('drive')) for s in scans],
@@ -884,17 +916,21 @@ def merge_scans(scans):
         for u in s.get('users_found') or []:
             if u not in out['users_found']:
                 out['users_found'].append(u)
-    rows = [r for r in drive_summary_rows(scans)]
+    rows = drive_summary_rows(scans, disk_cache=disk_cache)
+    total_bytes = free_bytes = used_bytes = 0
     for r in rows:
         if r.get('ok'):
-            out['total_gb'] += r['total_gb']
-            out['free_gb'] += r['free_gb']
-            out['used_gb'] += r['used_gb']
-    out['total_gb'] = round(out['total_gb'], 2)
-    out['free_gb'] = round(out['free_gb'], 2)
-    out['used_gb'] = round(out['used_gb'], 2)
-    out['free_pct'] = round(out['free_gb'] / out['total_gb'] * 100, 2) \
-        if out['total_gb'] else 0.0
+            total_bytes += int(r.get('total_bytes') or 0)
+            free_bytes += int(r.get('free_bytes') or 0)
+            used_bytes += int(r.get('used_bytes') or 0)
+    out['total_bytes'] = total_bytes
+    out['free_bytes'] = free_bytes
+    out['used_bytes'] = used_bytes
+    out['total_gb'] = round(total_bytes / GB, 2)
+    out['free_gb'] = round(free_bytes / GB, 2)
+    out['used_gb'] = round(used_bytes / GB, 2)
+    out['free_pct'] = round(free_bytes / total_bytes * 100, 2) \
+        if total_bytes else 0.0
     out['elapsed_sec'] = round(out['elapsed_sec'], 1)
     tight = [r for r in rows if r.get('ok')]
     if tight:
@@ -903,17 +939,20 @@ def merge_scans(scans):
     return out
 
 
-def drive_summary_rows(scans):
+def drive_summary_rows(scans, disk_cache=None):
     """把 scan 清單轉成每碟容量列（現讀容量，不用掃描當時的快照）。"""
     rows = []
     for s in scans or []:
         d = norm_drive(s.get('drive'))
         row = {'drive': d, 'letter': drive_key(d)}
         try:
-            di = disk_info(d)
+            di = _disk_cached(disk_cache, d)
             row.update({'ok': True, 'total_gb': di['total_gb'],
                         'free_gb': di['free_gb'], 'used_gb': di['used_gb'],
-                        'free_pct': di['free_pct']})
+                        'free_pct': di['free_pct'],
+                        'total_bytes': di['total_bytes'],
+                        'free_bytes': di['free_bytes'],
+                        'used_bytes': di['used_bytes']})
         except OSError:
             row.update({'ok': False, 'error': '無法讀取（碟可能已移除）'})
         row['files_seen'] = s.get('files_seen', 0)
@@ -941,48 +980,54 @@ def build_items(cfg, scan):
     ap = scan.get('appdata_paths', {})
     tp = scan.get('temp_paths', {})
     raw = []
+    junk_labels = {rel: lab for lab, rel in
+                   _junk_specs(drive, scan.get('users_found', []))}
 
-    def push(group, kind, name, mb, path, denied=False):
-        if not path or mb is None:
+    def row_bytes(row):
+        try:
+            return int(row.get('bytes'))
+        except (TypeError, ValueError):
+            return int(round(float(row.get('mb') or 0) * MB))
+
+    def push(group, kind, name, row, path, denied=False):
+        if not path or row is None:
             return
+        nbytes = row_bytes(row)
         raw.append({'group': group, 'kind': kind, 'name': name,
-                    'path': path, 'mb': round(float(mb), 1), 'denied': denied})
+                    'path': path, 'bytes': nbytes,
+                    'mb': round(nbytes / MB, 1), 'denied': denied})
 
     for r in agg.get('root', []):
         k = r['key']
-        push('root', 'root', k[1], r['mb'], os.path.join(drive, k[1]),
+        push('root', 'root', k[1], r, os.path.join(drive, k[1]),
              k[1].lower() in scan.get('denied_roots', []))
     for r in agg.get('user', []):
         k = r['key']
-        push('users', 'user', k[1], r['mb'], os.path.join(drive, 'Users', k[1]))
+        push('users', 'user', k[1], r, os.path.join(drive, 'Users', k[1]))
     for r in agg.get('useritem', []):
         k = r['key']
-        push('useritem', 'useritem', k[2], r['mb'],
+        push('useritem', 'useritem', k[2], r,
              os.path.join(drive, 'Users', k[1], k[2]))
     for r in agg.get('junk', []):
         k = r['key']
-        lab = 'B'
-        for _lab, rel in _junk_specs(drive, scan.get('users_found', [])):
-            if rel == k[1]:
-                lab = _lab
-                break
+        lab = junk_labels.get(k[1], 'B')
         path = jp.get(k[1]) or os.path.join(drive, *k[1].split('\\'))
-        push('junk', 'junk', lab, r['mb'], path)
+        push('junk', 'junk', lab, r, path)
     for r in agg.get('appdata', []):
         k = r['key']            # ('appdata', user, base, child)
         key = '|'.join(k[1:])
         path = ap.get(key) or os.path.join(drive, 'Users', k[1], 'AppData', k[2], k[3])
         push('appdata', 'localapp' if k[2].lower() == 'local' else 'roaming',
-             k[3], r['mb'], path)
+             k[3], r, path)
     for r in agg.get('temp', []):
         k = r['key']            # ('temp', user, child)
         key = '|'.join(k[1:])
         path = tp.get(key) or os.path.join(
             drive, 'Users', k[1], 'AppData', 'Local', 'Temp', k[2])
-        push('appdata', 'temp', k[2], r['mb'], path)
+        push('appdata', 'temp', k[2], r, path)
     for r in scan.get('big', [])[:cfg['scan'].get('top_n', 40)]:
         push('big', 'big', os.path.basename(r['path']) or r['path'],
-             r['mb'], r['path'])
+             r, r['path'])
 
     # 依完整路徑去重（同一路徑可能同時出現在 junk 與 appdata）
     seen, uniq = set(), []
@@ -1009,7 +1054,9 @@ def build_items(cfg, scan):
         action = 'direct'
         if any(low.endswith(t) for t in thumb):
             action = 'thumbcache_only'
-        if low in empty_rb or any(low.endswith(t) for t in empty_rb):
+        recycle_root = norm_drive(drive).lower().rstrip('\\') + '\\$recycle.bin'
+        if low == recycle_root and any(
+                x.rstrip('\\').lower() == '$recycle.bin' for x in empty_rb):
             action = 'empty_recycle_bin'
         excluded = any(ex in low for ex in exclusions)
         if excluded:
@@ -1020,6 +1067,7 @@ def build_items(cfg, scan):
             'kind': x['kind'],
             'name': '(根目錄檔案)' if is_root_files else x['name'],
             'path': (scan['drive'] if is_root_files else x['path']),
+            'bytes': x['bytes'],
             'mb': x['mb'],
             'tier': tier,
             'note': note,
@@ -1045,17 +1093,16 @@ def build_items(cfg, scan):
     # 若把 C:\Users、C:\Windows 這種總目錄也算進來，所有路徑都會被誤判為子項，
     # 實際可釋放量會被算成 0；若把 B 檔父目錄也算進來，Chrome Cache 等 A 檔會被誤排除。
     cand = [(i, x['path'].rstrip('\\').lower()) for i, x in enumerate(items)
-            if x['selectable'] and x['tier'] == 'A']
+            if x['selectable'] and x['tier'] == 'A' and x['action'] == 'direct']
+    ancestors = COM.nearest_ancestors([p for _i, p in cand])
+    nested_by_idx = {}
+    for (i, _p), parent in zip(cand, ancestors):
+        if parent is not None:
+            nested_by_idx[i] = items[cand[parent][0]]['path']
     for i, x in enumerate(items):
-        p = x['path'].rstrip('\\').lower()
-        best = None
-        for j, pp in cand:
-            if i != j and p.startswith(pp + '\\') and \
-                    (best is None or len(pp) > len(best[0])):
-                best = (pp, items[j]['path'])
-        x['nested_in'] = best[1] if best else None
+        x['nested_in'] = nested_by_idx.get(i)
         if x['nested_in']:
-            x['note'] = '⚠ 子目錄已包含於父項總量內，統計與刪除時會自動排除。' + x['note']
+            x['note'] = '⚠ 若父項也勾選，子項會被剔除；單獨勾選仍可處理。' + x['note']
         x['default'] = (x['tier'] in dcfg.get('default_tiers', ['A'])
                         and x['selectable']
                         and not x['locked'] and not x['excluded']
@@ -1081,32 +1128,38 @@ def build_all_items(cfg, scans):
     return out
 
 
-def effective_mb(sel):
-    """扣除「父項也在選取集合內」的子項，避免父子重複計算。"""
+def item_bytes(item):
+    try:
+        return int(item.get('bytes'))
+    except (TypeError, ValueError):
+        return int(round(float(item.get('mb') or 0) * MB))
+
+
+def effective_bytes(sel):
+    """依本批真正選取的父項扣除重疊；thumbcache_only 不涵蓋子目錄。"""
     paths = [x['path'].rstrip('\\').lower() for x in sel]
-    total = 0.0
+    ancestors = COM.nearest_ancestors(paths)
+    total = 0
     for i, x in enumerate(sel):
-        if any(i != j and paths[i].startswith(paths[j] + '\\')
-               for j in range(len(paths))):
-            continue
-        total += x['mb']
-    return round(total, 1)
+        parent = ancestors[i]
+        covered = False
+        while parent is not None:
+            if sel[parent].get('action', 'direct') == 'direct':
+                covered = True
+                break
+            parent = ancestors[parent]
+        if not covered:
+            total += item_bytes(x)
+    return total
 
 
-def _write_json_atomic(path, obj):
-    """先寫 .tmp 再 os.replace，避免中斷時留下半截 JSON。
+def effective_mb(sel):
+    return round(effective_bytes(sel) / MB, 1)
 
-    manifest 是事後追查「那次到底刪了什麼」的唯一線索，寧可多寫一次也不能寫壞。
-    """
-    tmp = path + '.tmp'
-    with open(tmp, 'w', encoding='utf-8') as f:
-        json.dump(obj, f, ensure_ascii=False, indent=2)
-        f.flush()
-        try:
-            os.fsync(f.fileno())
-        except OSError:
-            pass
-    os.replace(tmp, path)
+
+def _write_json_atomic(path, obj, durable=True):
+    """唯一暫存檔＋os.replace；進度檔可不 fsync，稽核檔仍維持耐久寫入。"""
+    COM.atomic_write_json(path, obj, durable=durable)
 
 
 # ------------------------------------------------------- 進度／結果回寫
@@ -1132,7 +1185,9 @@ def global_last_delete_path(cfg):
     return os.path.join(out_dir(cfg), 'last_delete.json')
 
 
-def read_json_quiet(path):
+def read_json_quiet(path, cache=None):
+    if cache is not None:
+        return cache.get(path)
     try:
         with open(path, encoding='utf-8') as f:
             return json.load(f)
@@ -1152,20 +1207,20 @@ def _newest(a, b):
         return a
 
 
-def read_progress(cfg):
+def read_progress(cfg, cache=None):
     """優先回傳較新的那份：跨碟合計（delete_progress.json）或單碟進度。"""
-    return _newest(read_json_quiet(global_progress_path(cfg)),
-                   read_json_quiet(progress_path(cfg)))
+    return _newest(read_json_quiet(global_progress_path(cfg), cache),
+                   read_json_quiet(progress_path(cfg), cache))
 
 
-def read_last_delete(cfg):
-    return _newest(read_json_quiet(global_last_delete_path(cfg)),
-                   read_json_quiet(last_delete_path(cfg)))
+def read_last_delete(cfg, cache=None):
+    return _newest(read_json_quiet(global_last_delete_path(cfg), cache),
+                   read_json_quiet(last_delete_path(cfg), cache))
 
 
-def progress_running(cfg, max_age_sec=20):
-    """進度檔是否代表「正在刪除」。超過 max_age_sec 沒更新就視為已中止。"""
-    p = read_progress(cfg)
+def progress_running(cfg, max_age_sec=20, progress=None):
+    """進度檔是否代表「正在刪除」。可傳已讀取的 progress，避免重複 IO。"""
+    p = progress if progress is not None else read_progress(cfg)
     if not p or p.get('status') != 'RUNNING':
         return None
     if time.time() - float(p.get('ts') or 0) > max_age_sec:
@@ -1173,14 +1228,14 @@ def progress_running(cfg, max_age_sec=20):
     return p
 
 
-def _record_last_delete(cfg, result):
+def _record_last_delete(cfg, result, disk=None):
     """把這顆碟的執行摘要寫成 last_delete_<X>.json（seq 遞增）。"""
     prev = read_json_quiet(last_delete_path(cfg)) or {}
     try:
         seq = int(prev.get('seq') or 0) + 1
     except (TypeError, ValueError):
         seq = 1
-    d = disk_info(cfg['drive'])
+    d = disk or disk_info(cfg['drive'])
     summary = {
         'seq': seq,
         'ts': time.time(),
@@ -1204,13 +1259,23 @@ def _record_last_delete(cfg, result):
 
 
 # ---------------------------------------------------------------- 網頁
+_PAGE_TEMPLATE = None
+
+
+def _page_template():
+    global _PAGE_TEMPLATE
+    if _PAGE_TEMPLATE is None:
+        with open(os.path.join(SCRIPTS, 'page.html'), 'r', encoding='utf-8') as f:
+            _PAGE_TEMPLATE = f.read()
+    return _PAGE_TEMPLATE
+
+
 def render_page(cfg, scans, items, api=False, token=''):
     """一份報告，包含掃描範圍內所有磁碟的項目。"""
-    tpl_path = os.path.join(SCRIPTS, 'page.html')
-    with open(tpl_path, 'r', encoding='utf-8') as f:
-        tpl = f.read()
-    inv = drive_inventory(cfg, scans)
-    totals = merge_scans(scans)
+    tpl = _page_template()
+    disk_cache = {}
+    inv = drive_inventory(cfg, scans, disk_cache=disk_cache)
+    totals = merge_scans(scans, disk_cache=disk_cache)
     meta = {
         'drive': cfg['drive'],
         'drives': [r for r in inv if r['scanned']],
@@ -1224,6 +1289,7 @@ def render_page(cfg, scans, items, api=False, token=''):
         'threshold_pct': cfg['alert']['threshold_pct'],
         'exclusions': cfg['delete'].get('default_exclusions', []),
         'default_tiers': cfg['delete'].get('default_tiers', ['A']),
+        'backup_limit_mb': cfg['delete'].get('small_backup_mb', 100),
         'monitor': monitor_drives(cfg),
         'last_delete': read_last_delete(cfg),
         'progress': read_progress(cfg),
@@ -1233,16 +1299,16 @@ def render_page(cfg, scans, items, api=False, token=''):
         return json.dumps(o, ensure_ascii=False).replace('<', '\\u003c')
 
     scope_text = '、'.join(r['letter'] + ':' for r in meta['drives']) or '—'
-    for k, v in (('__DATA__', j(items)), ('__DISK__', j(totals)),
-                 ('__META__', j(meta)), ('__NOW__', now_str()),
-                 ('__API__', 'true' if api else 'false'),
-                 ('__TOKEN__', token),
-                 ('__DRIVE__', j(cfg['drive'])),
-                 ('__DRIVES__', j(meta['drives'])),
-                 ('__SCOPE_TEXT__', scope_text.replace('&', '&amp;')
-                  .replace('<', '&lt;').replace('>', '&gt;'))):
-        tpl = tpl.replace(k, v)
-    return tpl
+    values = {
+        'DATA': j(items), 'DISK': j(totals), 'META': j(meta),
+        'NOW': now_str(), 'API': 'true' if api else 'false',
+        'TOKEN': token, 'DRIVE': j(cfg['drive']), 'DRIVES': j(meta['drives']),
+        'SCOPE_TEXT': scope_text.replace('&', '&amp;')
+                     .replace('<', '&lt;').replace('>', '&gt;'),
+    }
+    # 單次掃描 token，避免後續 replace 改壞已注入 JSON 中的合法路徑字串。
+    return re.sub(r'__(DATA|DISK|META|NOW|API|TOKEN|DRIVE|DRIVES|SCOPE_TEXT)__',
+                  lambda m: values[m.group(1)], tpl)
 
 
 def do_report(cfg, scans=None):
@@ -1251,8 +1317,7 @@ def do_report(cfg, scans=None):
     items = build_all_items(cfg, scans)
     html = render_page(cfg, scans, items, api=False)
     p = page_path(cfg)
-    with open(p, 'w', encoding='utf-8') as f:
-        f.write(html)
+    COM.atomic_write_text(p, html)
     emit('report: %d items from %s -> %s'
          % (len(items), '、'.join(drive_key(s.get('drive')) for s in scans), p))
     return p
@@ -1260,92 +1325,140 @@ def do_report(cfg, scans=None):
 
 # ---------------------------------------------------------------- 刪除流程
 def rmtree_safe(path):
+    """不跟隨 reparse point 的後序刪除；錯誤會如實回報。
+
+    舊版 os.walk(topdown=False) 在剪枝前早已走進 junction，可能刪到連結
+    目標。這裡用顯式 stack，第一次遇到目錄只列舉並剪枝，第二次才 rmdir。
+    """
     removed, errors = 0, 0
-    if not os.path.isdir(path):
+    try:
+        root_st = os.lstat(path)
+    except OSError:
+        return 0, 1
+    if root_st.st_file_attributes & 0x400:
+        return 0, 1
+    if not stat.S_ISDIR(root_st.st_mode):
         try:
             os.unlink(path)
             return 1, 0
         except OSError:
             return 0, 1
-    for cur, dirs, files in os.walk(path, topdown=False):
-        # 不碰 junction / reparse point，避免誤刪連結指向的目錄
-        safe = []
-        for d in dirs:
+
+    stack = [(path, False)]
+    while stack:
+        cur, post = stack.pop()
+        try:
+            st = os.lstat(cur)
+        except OSError:
+            errors += 1
+            continue
+        if st.st_file_attributes & 0x400:
+            errors += 1
+            continue
+        if not stat.S_ISDIR(st.st_mode):
             try:
-                if os.lstat(os.path.join(cur, d)).st_file_attributes & 0x400:
-                    continue
-            except OSError:
-                continue
-            safe.append(d)
-        dirs[:] = safe
-        for fn in files:
-            try:
-                os.unlink(os.path.join(cur, fn))
+                os.unlink(cur)
                 removed += 1
             except OSError:
                 errors += 1
-        for d in dirs:
+            continue
+        if post:
             try:
-                os.rmdir(os.path.join(cur, d))
+                os.rmdir(cur)
             except OSError:
                 errors += 1
-    try:
-        os.rmdir(path)
-    except OSError:
-        pass
+            continue
+        try:
+            with os.scandir(cur) as it:
+                entries = list(it)
+        except OSError:
+            errors += 1
+            continue
+        stack.append((cur, True))
+        for e in entries:
+            try:
+                est = e.stat(follow_symlinks=False)
+            except OSError:
+                errors += 1
+                continue
+            if est.st_file_attributes & 0x400:
+                # 保留連結本身；父目錄 rmdir 會失敗並計入殘留。
+                continue
+            stack.append((e.path, False))
     return removed, errors
 
 
 def backup_small(cfg, targets, stamp):
-    """把 <limit 的小目錄打包備份。備份一定寫在「程式資料碟」（通常是 C）。
+    """備份小項；I/O 不完整會阻止刪除，空間不足則明確標示不可還原。
 
-    多碟時這是個陷阱：清 D 盤卻把 ZIP 寫進 C 盤，本來只剩 2% 的 C 可能因此爆掉。
-    所以先算需要的空間，不夠就跳過實體備份並如實回報——寧可少一層保險，
-    也不要為了備份把系統碟推過門檻。
+    歸檔名加 target 前綴，避免不同目標的相同相對路徑互相覆蓋；走訪時
+    遞迴前剪除 reparse point，絕不把外部連結內容包進備份或誤刪。
     """
-    limit = cfg['delete'].get('small_backup_mb', 100)
-    small = [t for t in targets if t['mb'] < limit and os.path.isdir(t['path'])
+    limit = float(cfg['delete'].get('small_backup_mb', 100)) * MB
+    small = [t for t in targets if item_bytes(t) < limit
              and t['action'] == 'direct']
     if not small:
-        return {'path': None, 'roots': 0, 'files': 0, 'bytes': 0, 'skipped': 0}
-    need = sum(t['mb'] for t in small) * MB
+        return {'path': None, 'roots': 0, 'files': 0, 'bytes': 0,
+                'skipped': 0, 'complete': True, 'safe_to_continue': True}
+    need = sum(item_bytes(t) for t in small)
     host = os.path.splitdrive(out_dir(cfg))[0] + '\\'
     try:
         du = disk_info(host)
         if du['free_bytes'] < need * 2 + 200 * MB:
             return {'path': None, 'roots': len(small), 'files': 0, 'bytes': 0,
-                    'skipped': 0,
+                    'skipped': 0, 'complete': False, 'safe_to_continue': True,
+                    'policy_skip': True,
                     'skipped_reason': '備份碟 %s 僅剩 %.2f GB，不足以安全備份 %.1f MB，'
                                       '已跳過實體備份（本次刪除不可還原）'
                                       % (host, du['free_gb'], need / MB)}
     except OSError:
-        pass
+        return {'path': None, 'roots': len(small), 'files': 0, 'bytes': 0,
+                'skipped': 0, 'complete': False, 'safe_to_continue': True,
+                'policy_skip': True,
+                'skipped_reason': '無法確認備份碟空間，已跳過實體備份（本次刪除不可還原）'}
+
     bdir = os.path.join(out_dir(cfg), 'backups')
-    try:
-        os.makedirs(bdir, exist_ok=True)
-    except OSError:
-        bdir = out_dir(cfg)
+    COM.ensure_dir(bdir)
     zp = os.path.join(bdir, 'backup_%s_%s.zip'
                       % (drive_key(cfg['drive']), stamp))
-    n, skipped, total = 0, 0, 0
-    with zipfile.ZipFile(zp, 'w', zipfile.ZIP_DEFLATED, compresslevel=1) as z:
-        for t in small:
-            for cur, dirs, files in os.walk(t['path']):
-                dirs[:] = [d for d in dirs if not (
-                    os.lstat(os.path.join(cur, d)).st_file_attributes & 0x400)]
-                for fn in files:
-                    fp = os.path.join(cur, fn)
+    tmp = zp + '.tmp'
+    n, skipped, total, errors = 0, 0, 0, []
+    try:
+        with zipfile.ZipFile(tmp, 'w', zipfile.ZIP_DEFLATED, compresslevel=1) as z:
+            for idx, t in enumerate(small):
+                root = t['path']
+                if COM.is_reparse_path(root):
+                    errors.append(root + ': reparse point refused')
+                    continue
+                root_is_file = not os.path.isdir(root)
+                for fp, st in COM.walk_files_safe(
+                        root, on_error=lambda p, e:
+                        errors.append('%s: %s' % (p, e))):
+                    rel = os.path.basename(fp) if root_is_file else \
+                        os.path.relpath(fp, root)
+                    arc = 'target_%04d/%s' % (idx, rel.replace('\\', '/'))
                     try:
-                        z.write(fp, os.path.relpath(fp, t['path']))
+                        z.write(fp, arc)
                         n += 1
-                        total += os.path.getsize(fp)
-                    except OSError:
+                        total += st.st_size
+                    except OSError as exc:
                         skipped += 1
+                        errors.append('%s: %s' % (fp, exc))
+        os.replace(tmp, zp)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+    complete = not errors and skipped == 0
     return {'path': zp, 'roots': len(small), 'files': n,
-            'bytes': total, 'skipped': skipped}
+            'bytes': total, 'skipped': skipped, 'errors': errors[:20],
+            'error_count': len(errors), 'complete': complete,
+            'safe_to_continue': complete}
 
 
-def validate_targets(cfg, paths, items):
+def validate_targets(cfg, paths, items, live=False):
     r"""回傳 (targets, rejected)。任何不合法路徑都會被拒絕，不是整批中止而是逐項剔除。
 
     每條路徑用它「自己那顆碟」的規則驗證，而不是 cfg['drive']——多碟時
@@ -1359,6 +1472,7 @@ def validate_targets(cfg, paths, items):
         if d:
             allowed.add(d.lower().rstrip('\\'))
     targets, rejected = [], []
+    outroot = os.path.normcase(os.path.abspath(out_dir(cfg)))
     for p in paths:
         low = p.rstrip('\\').lower()
         drv = norm_drive(drive_of(p))
@@ -1370,6 +1484,13 @@ def validate_targets(cfg, paths, items):
         if not ok_scope:
             rejected.append({'path': p, 'reason': why})
             continue
+        try:
+            common = os.path.commonpath([outroot, os.path.normcase(os.path.abspath(p))])
+        except ValueError:
+            common = ''
+        if common in (outroot, os.path.normcase(os.path.abspath(p))):
+            rejected.append({'path': p, 'reason': '目標與程式輸出／備份目錄重疊，為保護紀錄已拒絕'})
+            continue
         x = by.get(low)
         if not x:
             rejected.append({'path': p, 'reason': '不在最新掃描清單內'})
@@ -1380,6 +1501,15 @@ def validate_targets(cfg, paths, items):
         if x['excluded']:
             rejected.append({'path': p, 'reason': '設定排除項'})
             continue
+        if live:
+            try:
+                lst = os.lstat(p)
+            except OSError:
+                rejected.append({'path': p, 'reason': '目標目前已不存在或無法讀取'})
+                continue
+            if lst.st_file_attributes & 0x400:
+                rejected.append({'path': p, 'reason': '目標已變成 junction／reparse point，拒絕刪除'})
+                continue
         d = dict(x)
         d['path'] = x['path']
         targets.append(d)
@@ -1390,12 +1520,19 @@ def validate_targets(cfg, paths, items):
             continue
         seen.add(t['path'].lower())
         uniq.append(t)
-    # 同一批內若有父子重疊，只保留父項（避免重複刪除與重複計算）
+    # 同一批內若父項動作涵蓋子項，只保留父項；O(N log N)。
     norms = [t['path'].rstrip('\\').lower() for t in uniq]
+    ancestors = COM.nearest_ancestors(norms)
     kept = []
     for i, t in enumerate(uniq):
-        if any(i != j and norms[i].startswith(norms[j] + '\\')
-               for j in range(len(norms))):
+        parent = ancestors[i]
+        covered = False
+        while parent is not None:
+            if uniq[parent].get('action', 'direct') == 'direct':
+                covered = True
+                break
+            parent = ancestors[parent]
+        if covered:
             rejected.append({'path': t['path'], 'reason': '子目錄已包含於同批父項'})
             continue
         kept.append(t)
@@ -1434,36 +1571,72 @@ def _resume_paths(cfg, manifest_path, items):
     return paths, dropped
 
 
-def do_delete(cfg, paths, dry_run=False, scan=None, progress=None):
+def _thumbcache_remaining(path):
+    n = 0
+    try:
+        with os.scandir(path) as it:
+            for e in it:
+                name = e.name.lower()
+                if name.startswith('thumbcache_') and name.endswith('.db'):
+                    n += 1
+    except OSError:
+        return -1
+    return n
+
+
+def do_delete(cfg, paths, dry_run=False, scan=None, progress=None, prepared=None):
     """依 2026-11-23 的流程：manifest → 小項備份 → 分批直接刪除 → 逐項複核 → 紀錄。
 
     progress：可選回呼 `fn(payload)`，每次進度更新時被呼叫（網頁用來推 SSE／輪詢）。
     進度同時以原子寫入 `delete_progress.json`，桌寵與其他行程都能讀到。
     """
     scan = scan or load_scan(cfg) or do_scan(cfg)
-    items = build_items(cfg, scan)
-    targets, rejected = validate_targets(cfg, paths, items)
-    stamp = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
-    free_before = disk_info(cfg['drive'])['free_bytes']
+    if prepared is None:
+        items = build_items(cfg, scan)
+    else:
+        _targets, _rejected, items = prepared
+    targets, rejected = validate_targets(cfg, paths, items, live=not dry_run)
+
+    if not dry_run and scan_is_stale(cfg, scan):
+        return {'created': now_str(), 'status': 'REJECTED',
+                'requested': len(paths), 'target_count': 0,
+                'target_mb': 0.0, 'effective_mb': 0.0,
+                'rejected': [{'path': p, 'reason': '掃描已過期，請先重新分析後再刪除'}
+                             for p in paths], 'dry_run': False}
+    if not dry_run and not cfg['delete'].get('allow_direct_delete', True):
+        return {'created': now_str(), 'status': 'REJECTED',
+                'requested': len(paths), 'target_count': 0,
+                'target_mb': 0.0, 'effective_mb': 0.0,
+                'rejected': [{'path': p, 'reason': '設定已停用直接刪除'}
+                             for p in paths], 'dry_run': False}
+
+    stamp = '%s_%d' % (datetime.datetime.now().strftime('%Y%m%d_%H%M%S_%f'),
+                       os.getpid())
+    disk_before = disk_info(cfg['drive'])
+    free_before = disk_before['free_bytes']
+    target_bytes = sum(item_bytes(t) for t in targets)
+    eff_bytes = effective_bytes(targets)
     result = {
         'created': now_str(),
         'started_at': now_str(),
-        # 執行中先標 RUNNING；只有在整段跑完且逐項複核後才會改成
-        # EXECUTED／PARTIAL／ABORTED。原本一開頭就寫 EXECUTED，一旦行程被
-        # 中斷（逾時、被安全鉤子打斷、斷電），紀錄會說謊（2026-11-25 實測）。
-        'status': 'DRY_RUN' if dry_run else 'RUNNING',
+        'status': 'DRY_RUN' if dry_run else ('NOOP' if not targets else 'RUNNING'),
         'requested': len(paths),
         'target_count': len(targets),
-        'target_mb': round(sum(t['mb'] for t in targets), 1),
-        'effective_mb': effective_mb(targets),
+        'target_bytes': target_bytes,
+        'target_mb': round(target_bytes / MB, 1),
+        'effective_bytes': eff_bytes,
+        'effective_mb': round(eff_bytes / MB, 1),
         'rejected': rejected,
         'free_before_mb': round(free_before / MB, 1),
         'dry_run': dry_run,
     }
     if dry_run:
-        result['targets'] = [{'path': t['path'], 'mb': t['mb'],
+        result['targets'] = [{'path': t['path'], 'bytes': item_bytes(t),
+                              'mb': round(item_bytes(t) / MB, 1),
                               'action': t['action'], 'tier': t['tier']}
                              for t in targets]
+        return result
+    if not targets:
         return result
 
     # 0) 進度上報：網頁輪詢 delete_progress.json，桌寵也讀同一份
@@ -1473,7 +1646,7 @@ def do_delete(cfg, paths, dry_run=False, scan=None, progress=None):
         'current': '', 'target_mb': result['target_mb'],
         'effective_mb': result['effective_mb'],
         'started_at': result['started_at'], 'ts': time.time(),
-        'pid': os.getpid(), 'free_pct': disk_info(cfg['drive'])['free_pct'],
+        'pid': os.getpid(), 'free_pct': disk_before['free_pct'],
     }
     last_pub = [0.0]
 
@@ -1484,7 +1657,7 @@ def do_delete(cfg, paths, dry_run=False, scan=None, progress=None):
             return                      # 逐項更新只在記憶體，落盤最多 2 次/秒
         last_pub[0] = prog['ts']
         try:
-            _write_json_atomic(progress_path(cfg), prog)
+            _write_json_atomic(progress_path(cfg), prog, durable=False)
         except Exception:
             pass
         if progress:
@@ -1498,63 +1671,92 @@ def do_delete(cfg, paths, dry_run=False, scan=None, progress=None):
     # 1) manifest
     manifest = dict(result)
     manifest['method'] = 'Python stdlib direct delete + SHEmptyRecycleBinW'
-    manifest['backup_policy'] = ('<100 MB 項目做 ZIP 實體備份；其餘為可自動重建之快取，'
-                                '以完整 manifest 取代位元備份。')
-    manifest['targets'] = [{'path': t['path'], 'mb': t['mb'], 'action': t['action'],
-                            'tier': t['tier'], 'nested_in': t['nested_in']}
+    backup_limit = float(cfg['delete'].get('small_backup_mb', 100))
+    manifest['backup_policy'] = ('<%s MB 項目做 ZIP 實體備份；其餘以完整 manifest '
+                                 '取代位元備份。' % backup_limit)
+    manifest['targets'] = [{'path': t['path'], 'bytes': item_bytes(t),
+                            'mb': round(item_bytes(t) / MB, 1),
+                            'action': t['action'], 'tier': t['tier'],
+                            'nested_in': t['nested_in']}
                            for t in targets]
     manifest['progress'] = {'done': 0, 'total': len(targets),
                             'removed': 0, 'remaining': 0, 'updated_at': now_str()}
     manifest['outcomes'] = []
     mp = os.path.join(out_dir(cfg), 'execution_manifest_%s_%s.json'
                       % (drive_key(cfg['drive']), stamp))
+    journal_path = mp + '.outcomes.jsonl'
+    manifest['outcome_journal'] = journal_path
     _write_json_atomic(mp, manifest)
     result['manifest'] = mp
+    journal = open(journal_path, 'a', encoding='utf-8')
 
-    def checkpoint():
-        """每批後落盤一次，中斷（逾時／被安全鉤子打斷／斷電）也追得回進度。"""
+    removed_count = 0
+    partial_count = 0
+
+    def checkpoint(final=False):
+        """摘要 checkpoint＋append-only journal；稽核寫失敗就中止下一批。"""
         manifest['progress'] = {
             'done': len(outcomes), 'total': len(targets),
-            'removed': sum(1 for o in outcomes if not o['after']),
-            'remaining': sum(1 for o in outcomes if o['after']),
+            'removed': removed_count, 'remaining': partial_count,
             'updated_at': now_str()}
-        manifest['outcomes'] = outcomes
+        manifest['outcomes_count'] = len(outcomes)
+        if final:
+            manifest['outcomes'] = outcomes
+        else:
+            manifest.pop('outcomes', None)
+        journal.flush()
         try:
-            _write_json_atomic(mp, manifest)
-        except Exception:
-            pass                       # 落盤失敗不可拖垮刪除流程
+            os.fsync(journal.fileno())
+        except OSError:
+            pass
+        _write_json_atomic(mp, manifest)
 
 
-    # 2) 小項備份
-    try:
-        result['backup'] = backup_small(cfg, targets, stamp)
-    except Exception as e:
-        result['backup'] = {'error': str(e)}
-
-    # 3) 分批刪除
-    bsize = max(1, cfg['delete'].get('batch_size', 10))
+    # 2) 小項備份；I/O 不完整時尚未刪除任何目標就中止。
     outcomes = []
     aborted = None
     try:
-        for bi in range(0, len(targets), bsize):
+        result['backup'] = backup_small(cfg, targets, stamp)
+    except Exception as e:
+        result['backup'] = {'error': str(e), 'complete': False,
+                            'safe_to_continue': False}
+    if not result['backup'].get('safe_to_continue', False):
+        aborted = '小項備份不完整，已阻止刪除：' + str(
+            result['backup'].get('error') or
+            ('%d 個備份錯誤' % result['backup'].get('error_count', 0)))
+
+    # 3) 分批刪除
+    bsize = max(1, cfg['delete'].get('batch_size', 10))
+    try:
+        for bi in range(0, len(targets) if aborted is None else 0, bsize):
             batch = targets[bi:bi + bsize]
             for t in batch:
                 p = t['path']
                 act = t['action']
-                rec = {'path': p, 'action': act, 'before': os.path.exists(p)}
+                rec = {'path': p, 'action': act,
+                       'before': os.path.lexists(p)}
                 try:
+                    # 備份後、刪除前再做一次即時檢查，阻擋掃描後被換成連結的目標。
+                    lst = os.lstat(p)
+                    if lst.st_file_attributes & 0x400:
+                        raise OSError('reparse point refused')
                     if act == 'thumbcache_only':
                         n = 0
-                        if os.path.isdir(p):
-                            for fn in os.listdir(p):
-                                if fn.lower().startswith('thumbcache_') and fn.lower().endswith('.db'):
+                        with os.scandir(p) as it:
+                            for e in it:
+                                name = e.name.lower()
+                                if name.startswith('thumbcache_') and name.endswith('.db'):
                                     try:
-                                        os.unlink(os.path.join(p, fn))
+                                        os.unlink(e.path)
                                         n += 1
                                     except OSError:
                                         pass
                         rec['removed'] = n
                     elif act == 'empty_recycle_bin':
+                        recycle_root = norm_drive(cfg['drive']).lower().rstrip('\\') + \
+                                       '\\$recycle.bin'
+                        if p.lower().rstrip('\\') != recycle_root:
+                            raise OSError('recycle path mismatch')
                         ok, detail = empty_recycle_bin(cfg['drive'])
                         rec['removed'] = 0
                         rec['detail'] = detail
@@ -1564,18 +1766,32 @@ def do_delete(cfg, paths, dry_run=False, scan=None, progress=None):
                         rec['errors'] = er
                 except Exception as e:
                     rec['error'] = str(e)
-                rec['after'] = os.path.exists(p)
-                if rec['after'] and os.path.isdir(p):
-                    try:
-                        rec['remaining'] = len(os.listdir(p))
-                    except OSError:
-                        rec['remaining'] = -1
+                rec['after'] = os.path.lexists(p)
+                if act == 'thumbcache_only':
+                    rec['remaining'] = _thumbcache_remaining(p)
+                    rec['satisfied'] = rec['remaining'] == 0
+                elif act == 'empty_recycle_bin':
+                    residual = recycle_bin_residual(cfg['drive'])
+                    rec['remaining'] = sum(int(r.get('files') or 0) for r in residual)
+                    rec['satisfied'] = rec.get('detail', '').startswith('HRESULT=0') \
+                                       and rec['remaining'] == 0
                 else:
-                    rec['remaining'] = 0
+                    if rec['after'] and os.path.isdir(p):
+                        try:
+                            rec['remaining'] = len(os.listdir(p))
+                        except OSError:
+                            rec['remaining'] = -1
+                    else:
+                        rec['remaining'] = 0
+                    rec['satisfied'] = not rec['after']
+                if rec['satisfied']:
+                    removed_count += 1
+                else:
+                    partial_count += 1
                 outcomes.append(rec)
+                journal.write(json.dumps(rec, ensure_ascii=False) + '\n')
                 pub(phase='deleting', done=len(outcomes), current=p,
-                    removed=sum(1 for o in outcomes if not o['after']),
-                    remaining=sum(1 for o in outcomes if o['after']))
+                    removed=removed_count, remaining=partial_count)
             # 每批後複核；若有非預期例外則記錄但不中斷（逐項容錯）
             log(cfg, 'delete batch %d/%d done' %
                 (bi // bsize + 1, math.ceil(len(targets) / bsize)))
@@ -1588,8 +1804,8 @@ def do_delete(cfg, paths, dry_run=False, scan=None, progress=None):
         log(cfg, 'delete ABORTED after %d/%d targets: %s' %
             (len(outcomes), len(targets), aborted))
     result['outcomes'] = outcomes
-    result['fully_removed'] = sum(1 for o in outcomes if not o['after'])
-    result['partial'] = sum(1 for o in outcomes if o['after'])
+    result['fully_removed'] = removed_count
+    result['partial'] = partial_count
     if aborted:
         result['status'] = 'ABORTED'
         result['aborted_reason'] = aborted
@@ -1603,7 +1819,15 @@ def do_delete(cfg, paths, dry_run=False, scan=None, progress=None):
     manifest['finished_at'] = result['finished_at']
     if aborted:
         manifest['aborted_reason'] = aborted
-    checkpoint()
+    try:
+        checkpoint(final=True)
+    except Exception as exc:
+        result['audit_error'] = str(exc)
+        if result['status'] == 'EXECUTED':
+            result['status'] = 'PARTIAL'
+            manifest['status'] = result['status']
+    finally:
+        journal.close()
     pub(force=True, status=result['status'], phase='done', current='',
         done=len(outcomes), removed=result['fully_removed'],
         remaining=result['partial'],
@@ -1620,7 +1844,8 @@ def do_delete(cfg, paths, dry_run=False, scan=None, progress=None):
     result['recycle_bin_residual'] = recycle_bin_residual(cfg['drive'])
 
     # 5) 空間對比（同一資料來源）
-    free_after = disk_info(cfg['drive'])['free_bytes']
+    disk_after = disk_info(cfg['drive'])
+    free_after = disk_after['free_bytes']
     result['free_after_mb'] = round(free_after / MB, 1)
     result['observed_gain_mb'] = round((free_after - free_before) / MB, 1)
     result['gain_note'] = ('觀測淨增受其他程式寫入影響，不等於精確歸因；'
@@ -1629,8 +1854,7 @@ def do_delete(cfg, paths, dry_run=False, scan=None, progress=None):
     # 6) 寫紀錄
     rp = os.path.join(out_dir(cfg), 'execution_result_%s_%s.json'
                       % (drive_key(cfg['drive']), stamp))
-    with open(rp, 'w', encoding='utf-8') as f:
-        json.dump(result, f, ensure_ascii=False, indent=2)
+    _write_json_atomic(rp, result)
     lp = os.path.join(out_dir(cfg), 'execution_log_%s.md' % drive_key(cfg['drive']))
     L = ['# cdisk-guard 執行紀錄 · %s · %s' % (drive_key(cfg['drive']), now_str()), '',
          '| 項目 | 數值 |', '|---|---|',
@@ -1645,8 +1869,8 @@ def do_delete(cfg, paths, dry_run=False, scan=None, progress=None):
          '| 刪除後剩餘 | %.1f MB |' % result['free_after_mb'],
          '| 觀測淨增 | %.1f MB |' % result['observed_gain_mb'], '',
          '> ⚠️ 此操作非常危險，可能導致不可逆的數據丟失！本工具不主動移入回收站，'
-         '僅 <100 MB 小項 ZIP 備份可還原。注意：部分環境（非系統碟、裝有第三方'
-         '檔案篩選程式）會把刪除導向該碟自己的回收站，實際殘留請見下一節。', '',
+         '僅 <%s MB 小項 ZIP 備份可還原。注意：部分環境（非系統碟、裝有第三方'
+         '檔案篩選程式）會把刪除導向該碟自己的回收站，實際殘留請見下一節。' % backup_limit, '',
          '## 逐項結果', '',
          '| 動作 | 前 | 後 | 殘留 | 路徑 |', '|---|---|---|---|---|']
     for o in outcomes:
@@ -1664,15 +1888,14 @@ def do_delete(cfg, paths, dry_run=False, scan=None, progress=None):
           '- manifest：`%s`' % mp,
           '- 備份：`%s`' % result.get('backup', {}).get('path', '—'),
           '- 結果：`%s`' % rp, '']
-    with open(lp, 'w', encoding='utf-8') as f:
-        f.write('\n'.join(L))
+    COM.atomic_write_text(lp, '\n'.join(L))
     result['log_path'] = lp
     log(cfg, 'delete done: targets=%d fully=%d partial=%d gain=%.1f MB' %
         (len(targets), result['fully_removed'], result['partial'],
          result['observed_gain_mb']))
     # 回寫「上次執行」摘要：桌寵據此提示，網頁據此顯示，不用人去翻 execution_log.md
     try:
-        result['last_delete'] = _record_last_delete(cfg, result)
+        result['last_delete'] = _record_last_delete(cfg, result, disk_after)
     except Exception:
         pass
     return result
@@ -1682,13 +1905,13 @@ def do_delete(cfg, paths, dry_run=False, scan=None, progress=None):
 def _merge_status(statuses):
     """整批的狀態：有任何一顆被中斷就是 ABORTED，有殘留就是 PARTIAL。"""
     s = [x for x in statuses if x]
-    for bad in ('ABORTED', 'PARTIAL'):
+    for bad in ('ABORTED', 'REJECTED', 'PARTIAL'):
         if bad in s:
             return bad
-    return 'EXECUTED' if s else 'DRY_RUN'
+    return 'EXECUTED' if s else 'NOOP'
 
 
-def do_delete_multi(cfg, paths, dry_run=False, scans=None, progress=None):
+def _do_delete_multi_unlocked(cfg, paths, dry_run=False, scans=None, progress=None):
     """把勾選項目按磁碟分組，逐碟跑既有的 do_delete，再合併成一份結果。
 
     刻意不改 do_delete 的簽名與流程：它是「單碟刪除」這件事的唯一實作，
@@ -1712,7 +1935,7 @@ def do_delete_multi(cfg, paths, dry_run=False, scans=None, progress=None):
         groups[d].append(p)
 
     if not groups:
-        return {'created': now_str(), 'status': 'DRY_RUN' if dry_run else 'EXECUTED',
+        return {'created': now_str(), 'status': 'DRY_RUN' if dry_run else 'NOOP',
                 'requested': len(paths), 'target_count': 0, 'target_mb': 0,
                 'effective_mb': 0, 'rejected': rejected, 'per_drive': [],
                 'dry_run': dry_run}
@@ -1725,7 +1948,7 @@ def do_delete_multi(cfg, paths, dry_run=False, scans=None, progress=None):
         items = build_items(c, scan_by[d])
         targets, rej = validate_targets(c, groups[d], items)
         rejected.extend(rej)
-        pre.append((d, c, targets))
+        pre.append((d, c, targets, items))
         grand_total += len(targets)
 
     if dry_run:
@@ -1733,38 +1956,40 @@ def do_delete_multi(cfg, paths, dry_run=False, scans=None, progress=None):
                   'requested': len(paths), 'target_count': 0, 'target_mb': 0.0,
                   'effective_mb': 0.0, 'rejected': list(rejected),
                   'per_drive': [], 'dry_run': True}
-        for d, c, targets in pre:
+        for d, c, targets, _items in pre:
             if not targets:
                 continue
-            r = do_delete(c, [t['path'] for t in targets],
-                          dry_run=True, scan=scan_by[d])
-            merged['target_count'] += r['target_count']
-            merged['target_mb'] += r['target_mb']
-            merged['effective_mb'] += r['effective_mb']
-            merged['rejected'].extend(r.get('rejected') or [])
+            tb = sum(item_bytes(t) for t in targets)
+            eb = effective_bytes(targets)
+            merged['target_count'] += len(targets)
+            merged['target_mb'] += tb / MB
+            merged['effective_mb'] += eb / MB
             merged['per_drive'].append({
-                'drive': d, 'letter': drive_key(d), 'status': r['status'],
-                'target_count': r['target_count'], 'target_mb': r['target_mb'],
-                'effective_mb': r['effective_mb']})
+                'drive': d, 'letter': drive_key(d), 'status': 'DRY_RUN',
+                'target_count': len(targets), 'target_bytes': tb,
+                'target_mb': round(tb / MB, 1),
+                'effective_bytes': eb, 'effective_mb': round(eb / MB, 1)})
         merged['target_mb'] = round(merged['target_mb'], 1)
         merged['effective_mb'] = round(merged['effective_mb'], 1)
         return merged
 
-    stamp = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
+    stamp = '%s_%d' % (datetime.datetime.now().strftime('%Y%m%d_%H%M%S_%f'),
+                       os.getpid())
     prog = {'status': 'RUNNING', 'phase': 'prepare', 'stamp': stamp,
             'done': 0, 'total': grand_total, 'removed': 0, 'remaining': 0,
             'current': '', 'drive': order[0], 'drive_index': 1,
             'drive_count': len(order), 'scope': [drive_key(x) for x in order],
             'started_at': now_str(), 'ts': time.time(), 'pid': os.getpid(),
-            'target_mb': round(sum(t['mb'] for _d, _c, ts in pre for t in ts), 1)}
+            'target_mb': round(sum(item_bytes(t) / MB
+                                  for _d, _c, ts, _items in pre for t in ts), 1)}
     try:
-        _write_json_atomic(global_progress_path(cfg), prog)
+        _write_json_atomic(global_progress_path(cfg), prog, durable=False)
     except Exception:
         pass
 
     base = [0, 0, 0]            # done / removed / remaining 的跨碟累計
     per, statuses = [], []
-    for idx, (d, c, targets) in enumerate(pre):
+    for idx, (d, c, targets, items) in enumerate(pre):
         letter = drive_key(d)
         if not targets:
             per.append({'drive': d, 'letter': letter, 'status': 'SKIPPED',
@@ -1783,7 +2008,7 @@ def do_delete_multi(cfg, paths, dry_run=False, scans=None, progress=None):
             g['remaining'] = base[2] + int(p.get('remaining') or 0)
             g['ts'] = time.time()
             try:
-                _write_json_atomic(global_progress_path(cfg), g)
+                _write_json_atomic(global_progress_path(cfg), g, durable=False)
             except Exception:
                 pass
             if progress:
@@ -1793,8 +2018,10 @@ def do_delete_multi(cfg, paths, dry_run=False, scans=None, progress=None):
                     pass
 
         res = do_delete(c, [t['path'] for t in targets],
-                        dry_run=False, scan=scan_by[d], progress=cb)
-        base[0] += int(res.get('target_count') or 0)
+                        dry_run=False, scan=scan_by[d], progress=cb,
+                        prepared=(targets, [], items))
+        rejected.extend(res.get('rejected') or [])
+        base[0] += len(res.get('outcomes') or [])
         base[1] += int(res.get('fully_removed') or 0)
         base[2] += int(res.get('partial') or 0)
         statuses.append(res.get('status'))
@@ -1858,7 +2085,8 @@ def do_delete_multi(cfg, paths, dry_run=False, scans=None, progress=None):
         merged['partial'], merged['target_mb'], merged['effective_mb'],
         merged['observed_gain_mb']), '',
         '> ⚠️ 此操作非常危險，可能導致不可逆的數據丟失！本工具不主動移入回收站，'
-        '僅 <100 MB 小項 ZIP 備份可還原。部分環境會把刪除導向該碟自己的回收站。',
+        '僅 <%s MB 小項 ZIP 備份可還原。部分環境會把刪除導向該碟自己的回收站。'
+        % float(cfg['delete'].get('small_backup_mb', 100)),
         '', '## 逐碟紀錄', '']
     for p in per:
         L.append('- `%s:` 明細：`%s`' % (p['letter'], p.get('log_path') or '—'))
@@ -1873,11 +2101,12 @@ def do_delete_multi(cfg, paths, dry_run=False, scans=None, progress=None):
     except Exception:
         pass
 
-    prog.update({'status': 'DONE', 'phase': 'done', 'done': grand_total,
+    prog.update({'status': merged['status'], 'phase': 'done', 'done': base[0],
                  'removed': merged['fully_removed'],
-                 'remaining': merged['partial'], 'current': '', 'ts': time.time()})
+                 'remaining': merged['partial'] + max(0, grand_total - base[0]),
+                 'current': '', 'ts': time.time()})
     try:
-        _write_json_atomic(global_progress_path(cfg), prog)
+        _write_json_atomic(global_progress_path(cfg), prog, durable=False)
     except Exception:
         pass
 
@@ -1903,6 +2132,30 @@ def do_delete_multi(cfg, paths, dry_run=False, scans=None, progress=None):
     return merged
 
 
+_DELETE_LOCK = threading.Lock()
+
+
+def do_delete_multi(cfg, paths, dry_run=False, scans=None, progress=None):
+    """全機同一時間只允許一批刪除；執行緒鎖＋跨行程檔案鎖。"""
+    if not _DELETE_LOCK.acquire(blocking=False):
+        return {'created': now_str(), 'status': 'BUSY', 'requested': len(paths),
+                'target_count': 0, 'rejected': [], 'dry_run': dry_run,
+                'error': '已有刪除作業正在進行'}
+    COM.ensure_dir(out_dir(cfg))
+    flock = _open_exclusive(os.path.join(out_dir(cfg), 'delete.lock'))
+    if not flock:
+        _DELETE_LOCK.release()
+        return {'created': now_str(), 'status': 'BUSY', 'requested': len(paths),
+                'target_count': 0, 'rejected': [], 'dry_run': dry_run,
+                'error': '另一個程序正在刪除'}
+    try:
+        return _do_delete_multi_unlocked(cfg, paths, dry_run=dry_run,
+                                         scans=scans, progress=progress)
+    finally:
+        flock.close()
+        _DELETE_LOCK.release()
+
+
 # ---------------------------------------------------------------- 本機後端
 EDGE = r'C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe'
 CHROME = r'C:\Program Files\Google\Chrome\Application\chrome.exe'
@@ -1915,6 +2168,7 @@ class GuardServer:
         self.token = secrets.token_urlsafe(18)
         self._lock = threading.Lock()
         self._scan_lock = threading.Lock()
+        self._delete_lock = threading.Lock()
         # 開頁要顯示「上次實際分析的範圍」，否則改了設定或只掃過一顆碟時，
         # 頁面會摻進一顆根本沒分析過的碟（顯示成 0 項），看起來像漏掃。
         self.scope = [norm_drive(d)
@@ -1930,7 +2184,7 @@ class GuardServer:
 
         def scan_these(drives):
             """掃描指定磁碟並換掉目前報告；掃描要幾分鐘，先擋住重複請求。"""
-            if not outer._scan_lock.acquire(blocking=False):
+            if outer._delete_lock.locked() or not outer._scan_lock.acquire(blocking=False):
                 return None
             try:
                 scans = scan_all(outer.cfg, drives, budget_sec=None, verbose=True)
@@ -1964,19 +2218,24 @@ class GuardServer:
                                        api=True, token=outer.token)
                     self._send(200, html.encode('utf-8'), 'text/html; charset=utf-8')
                 elif path == '/api/state':
-                    self._json({'drives': drive_summary_rows(outer.scans),
-                                'available': drive_inventory(outer.cfg, outer.scans),
+                    cache = {}
+                    self._json({'drives': drive_summary_rows(outer.scans, disk_cache=cache),
+                                'available': drive_inventory(outer.cfg, outer.scans,
+                                                             disk_cache=cache),
                                 'scope': outer.scope,
-                                'totals': merge_scans(outer.scans),
+                                'totals': merge_scans(outer.scans, disk_cache=cache),
                                 'progress': read_progress(outer.cfg),
                                 'last_delete': read_last_delete(outer.cfg),
                                 'token': outer.token})
                 elif path == '/api/progress':
-                    # 網頁在刪除期間每 0.7 s 輪詢；running=False 代表已結束／已中止
-                    self._json({'ok': True,
-                                'running': bool(progress_running(outer.cfg)),
-                                'progress': read_progress(outer.cfg),
-                                'drives': drive_summary_rows(outer.scans),
+                    # 單次讀取 progress；磁碟查詢在本請求內共用。
+                    cache = {}
+                    current = read_progress(outer.cfg)
+                    running = bool(current and current.get('status') == 'RUNNING'
+                                   and time.time() - float(current.get('ts') or 0) <= 20)
+                    self._json({'ok': True, 'running': running,
+                                'progress': current,
+                                'drives': drive_summary_rows(outer.scans, disk_cache=cache),
                                 'last_delete': read_last_delete(outer.cfg)})
                 elif path == '/favicon.ico':
                     self._send(204, b'', 'image/x-icon')
@@ -2011,22 +2270,28 @@ class GuardServer:
                     res = scan_these(picks)
                     if res is None:
                         return self._json({'error': '已有分析在進行中，請稍候'}, 409)
+                    totals = merge_scans(res)
                     return self._json({'ok': True,
                                        'scope': outer.scope,
                                        'drives': [drive_key(s['drive']) for s in res],
-                                       'created': merge_scans(res)['created'],
+                                       'created': totals['created'],
                                        'items': len(outer.items),
-                                       'totals': merge_scans(res)})
+                                       'totals': totals})
                 if path == '/api/delete':
-                    if not body.get('confirm'):
-                        return self._json({'error': 'need explicit confirm'}, 400)
-                    paths = body.get('paths', [])
-                    if not isinstance(paths, list) or not paths:
-                        return self._json({'error': 'empty selection'}, 400)
-                    dry = bool(body.get('dry_run'))
-                    res = do_delete_multi(outer.cfg, paths, dry_run=dry,
-                                          scans=outer.scans)
-                    return self._json(res)
+                    if not outer._delete_lock.acquire(blocking=False):
+                        return self._json({'error': '已有刪除作業正在進行'}, 409)
+                    try:
+                        if not body.get('confirm'):
+                            return self._json({'error': 'need explicit confirm'}, 400)
+                        paths = body.get('paths', [])
+                        if not isinstance(paths, list) or not paths:
+                            return self._json({'error': 'empty selection'}, 400)
+                        dry = bool(body.get('dry_run'))
+                        res = do_delete_multi(outer.cfg, paths, dry_run=dry,
+                                              scans=outer.scans)
+                        return self._json(res, 409 if res.get('status') == 'BUSY' else 200)
+                    finally:
+                        outer._delete_lock.release()
                 return self._json({'error': 'not found'}, 404)
 
         host = cfg['server'].get('host', '127.0.0.1')
@@ -2120,13 +2385,13 @@ def decide_notify(cfg, disk):
 
 def write_notice(cfg, disk, reason):
     p = os.path.join(out_dir(cfg), 'notice.md')
-    with open(p, 'w', encoding='utf-8') as f:
-        f.write('# cdisk-guard 通知 · %s\n\n' % now_str())
-        f.write('- 觸發原因：%s\n' % reason)
-        f.write('- 剩餘：%.2f GB / %.2f GB（%.2f%%）\n' %
-                (disk['free_gb'], disk['total_gb'], disk['free_pct']))
-        f.write('- 門檻：%.1f%%\n' % cfg['alert']['threshold_pct'])
-        f.write('- 最新分析網頁：`%s`\n' % page_path(cfg))
+    text = ('# cdisk-guard 通知 · %s\n\n' % now_str() +
+            '- 觸發原因：%s\n' % reason +
+            '- 剩餘：%.2f GB / %.2f GB（%.2f%%）\n' %
+            (disk['free_gb'], disk['total_gb'], disk['free_pct']) +
+            '- 門檻：%.1f%%\n' % cfg['alert']['threshold_pct'] +
+            '- 最新分析網頁：`%s`\n' % page_path(cfg))
+    COM.atomic_write_text(p, text)
     return p
 
 
@@ -2486,6 +2751,7 @@ def acquire_lock(cfg, mode='watch'):
     取得鎖後把「誰佔用」寫進 watch.owner.json，衝突時才講得出是桌寵還是守護在跑。
     """
     try:
+        COM.ensure_dir(out_dir(cfg))
         lock = _open_exclusive(lock_path(cfg))
     except Exception:
         return None
@@ -2610,8 +2876,29 @@ def cmd_selftest(cfg, with_ui=False):
     ok.append(('delete dry-run', dry['status'] == 'DRY_RUN' and
                dry['target_count'] >= 0, 'targets=%d rejected=%d' %
                (dry['target_count'], len(dry['rejected']))))
-    ok.append(('delete did not touch disk',
-               disk_info(cfg['drive'])['free_bytes'] == disk['free_bytes'] or True, ''))
+    # 用隔離暫存目標驗證 dry-run 真的不碰檔，不以全碟剩餘空間變化為斷言
+    # （其他程序同時寫入會讓 free_bytes 比較失去意義）。
+    import shutil
+    iso = tempfile.mkdtemp(prefix='dg-dryrun-')
+    try:
+        target = os.path.join(iso, 'target')
+        os.makedirs(target)
+        marker = os.path.join(target, 'KEEP.txt')
+        with open(marker, 'w', encoding='utf-8') as f:
+            f.write('keep')
+        item = {'path': target, 'bytes': 5, 'mb': 0.0, 'tier': 'A',
+                'action': 'direct', 'selectable': True, 'locked': False,
+                'excluded': False, 'nested_in': None, 'drive': 'C:\\'}
+        icfg = copy.deepcopy(cfg)
+        icfg['paths']['output_dir'] = os.path.join(iso, 'out')
+        iscan = {'created': now_str(), 'drive': 'C:\\'}
+        dry_one = do_delete(icfg, [target], dry_run=True, scan=iscan,
+                            prepared=([item], [], [item]))
+        ok.append(('delete did not touch disk',
+                   dry_one['status'] == 'DRY_RUN' and os.path.exists(marker),
+                   'isolated temp target preserved'))
+    finally:
+        shutil.rmtree(iso, ignore_errors=True)
 
     # 後端只在 127.0.0.1 上起一次，不開瀏覽器
     import urllib.request

@@ -378,9 +378,26 @@ const state = {
 
 const fmt = mb => (mb >= 1024 ? (mb/1024).toFixed(2)+' GB' : mb.toFixed(1)+' MB');
 const esc = s => String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-const sumMB = a => a.reduce((s,x)=>s+x.mb,0);
-// 實際可釋放：扣除「子項已含於父項」與「依設定排除」兩類，與後端 validate_targets 一致
-const effMB = a => a.filter(x=>!x.nested_in && !x.excluded).reduce((s,x)=>s+x.mb,0);
+const mbOf = x => x.bytes!=null ? x.bytes/(1024*1024) : Number(x.mb||0);
+const sumMB = a => a.reduce((s,x)=>s+mbOf(x),0);
+// 與後端 effective_bytes 同口徑：只扣除「本批確實選取且動作為 direct」的祖先。
+const effMB = a => {
+  const items = a.filter(x=>!x.excluded).slice().sort((x,y)=>{
+    const a=String(x.path).toLowerCase(), b=String(y.path).toLowerCase();
+    return a<b?-1:(a>b?1:0);
+  });
+  const stack = [];
+  let total = 0;
+  for(const x of items){
+    const p = String(x.path).replace(/\\+$/,'').toLowerCase();
+    while(stack.length && !p.startsWith(stack[stack.length-1].p+'\\')) stack.pop();
+    let covered = false;
+    for(let i=stack.length-1;i>=0;i--) if(stack[i].direct){ covered=true; break; }
+    if(!covered) total += mbOf(x);
+    stack.push({p, direct:(x.action||'direct')==='direct'});
+  }
+  return total;
+};
 const isPickable = x => x.selectable && !x.excluded;
 
 function sortList(a){
@@ -688,14 +705,14 @@ document.getElementById('btn-delete').onclick = ()=>{
     h += '<div class="warnbox">這次跨 <b>'+letters.length+'</b> 顆磁碟（'+letters.join('、')+'）：會<b>逐碟</b>執行，'
        + '每顆碟各有自己的 manifest、備份與紀錄；合計結果另存一份。</div>';
   }
-  h += '<div class="warnbox">刪除前會自動建立 manifest 與 &lt;100 MB 小項 ZIP 備份；'
-     + '使用中／被鎖定的檔案會略過並記入執行紀錄；C 檔與鎖定項由後端再次拒絕。</div>';
+  h += '<div class="warnbox">刪除前會自動建立 manifest 與 &lt;'+esc(META.backup_limit_mb||100)
+     + ' MB 小項 ZIP 備份；備份不完整會阻止刪除；使用中／被鎖定的檔案會如實回報殘留。</div>';
   letters.forEach(L=>{
     const items = by[L];
     h += '<div class="result"><b>'+esc(L)+':</b> '+items.length+' 項，帳面 '+fmt(sumMB(items))
       + '<ul>'+items.map(x=>'<li><span class="tier t'+x.tier+'">'+esc(x.tier)+'</span> '
       + '<code>'+esc(x.path)+'</code> — '+fmt(x.mb)
-      + (x.nested_in?'（子項，後端會自動剔除）':'')+'</li>').join('')+'</ul></div>';
+      + (x.nested_in?'（若同批父項也選取，後端會剔除本子項）':'')+'</li>').join('')+'</ul></div>';
   });
   const mf = showModal('⚠️ 執行刪除確認', h,
     '<button id="m-cancel" class="ghost">取消</button>'

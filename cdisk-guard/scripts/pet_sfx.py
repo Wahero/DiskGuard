@@ -27,11 +27,14 @@ import time
 import wave
 import struct
 import random
+import tempfile
+import threading
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SFX_DIR = os.path.join(ROOT, 'assets', 'sfx')
 RATE = 22050
 AMP = 0.22  # 保守音量，避免干擾日常
+_GENERATE_LOCK = threading.Lock()
 
 # name -> (kind, [freq...], duration_sec)
 TABLE = {
@@ -156,25 +159,38 @@ def wav_path(name):
 
 
 def generate(name, force=False):
-    """合成單一音效並寫入 assets/sfx/<name>.wav，回傳路徑。"""
+    """合成單一音效並原子寫入 assets/sfx/<name>.wav；失敗時靜默回傳 None。"""
     if name not in TABLE:
         return None
-    p = wav_path(name)
-    if os.path.exists(p) and not force:
-        return p
-    os.makedirs(SFX_DIR, exist_ok=True)
-    kind, freqs, dur = TABLE[name]
-    samples = _samples(kind, freqs, dur)
-    frames = b''.join(struct.pack('<h', int(max(-1.0, min(1.0, s)) * AMP * 32767))
-                      for s in samples)
-    tmp = p + '.tmp'
-    with wave.open(tmp, 'wb') as w:
-        w.setnchannels(1)
-        w.setsampwidth(2)
-        w.setframerate(RATE)
-        w.writeframes(frames)
-    os.replace(tmp, p)
-    return p
+    tmp = None
+    try:
+        with _GENERATE_LOCK:
+            p = wav_path(name)
+            if os.path.exists(p) and not force:
+                return p
+            os.makedirs(SFX_DIR, exist_ok=True)
+            kind, freqs, dur = TABLE[name]
+            samples = _samples(kind, freqs, dur)
+            frames = b''.join(struct.pack('<h', int(max(-1.0, min(1.0, s)) * AMP * 32767))
+                              for s in samples)
+            # 每次呼叫都使用獨立暫存檔，避免並發生成互相覆蓋或讀到半成品。
+            fd, tmp = tempfile.mkstemp(prefix=name + '.', suffix='.tmp', dir=SFX_DIR)
+            os.close(fd)
+            with wave.open(tmp, 'wb') as w:
+                w.setnchannels(1)
+                w.setsampwidth(2)
+                w.setframerate(RATE)
+                w.writeframes(frames)
+            os.replace(tmp, p)
+            return p
+    except Exception:
+        return None
+    finally:
+        if tmp:
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
 
 
 def generate_all(force=False):
@@ -186,7 +202,8 @@ def generate_all(force=False):
 MIN_GAP = 0.12
 PRIORITY = {'alert', 'alert_enter', 'scan', 'scan_done', 'happy',
             'serve', 'exit', 'paused', 'degraded', 'delete_done', 'boot'}
-_LAST = {'name': None, 'ts': 0.0, 'dur': 0.0}
+_LAST = {'name': None, 'ts': None, 'dur': 0.0}
+_PLAY_LOCK = threading.Lock()
 
 
 def play(name, enabled=True):
@@ -201,33 +218,36 @@ def play(name, enabled=True):
     global _LAST
     if not enabled or name not in TABLE:
         return False
-    p = wav_path(name)
-    if not os.path.exists(p):
-        p = generate(name)
-    if not p:
-        return False
-    now = time.time()
-    gap = now - _LAST['ts']
-    if name == _LAST['name'] and gap < _LAST['dur'] * 0.9:
-        return False
-    if gap < MIN_GAP and name not in PRIORITY:
-        return False
-    try:
-        import winsound
-        winsound.PlaySound(p, winsound.SND_ASYNC | winsound.SND_FILENAME |
-                           winsound.SND_NODEFAULT)
-        _LAST = {'name': name, 'ts': now, 'dur': TABLE[name][2]}
-        return True
-    except Exception:
-        return False
+    # 先在有鎖保護的狀態上做節流判斷，被略過的事件完全不碰檔案系統。
+    with _PLAY_LOCK:
+        now = time.monotonic()
+        gap = now - _LAST['ts'] if _LAST['ts'] is not None else float('inf')
+        if name == _LAST['name'] and gap < _LAST['dur'] * 0.9:
+            return False
+        if gap < MIN_GAP and name not in PRIORITY:
+            return False
+        try:
+            p = wav_path(name)
+            if not os.path.exists(p):
+                p = generate(name)
+            if not p:
+                return False
+            import winsound
+            winsound.PlaySound(p, winsound.SND_ASYNC | winsound.SND_FILENAME |
+                               winsound.SND_NODEFAULT)
+            _LAST = {'name': name, 'ts': now, 'dur': TABLE[name][2]}
+            return True
+        except Exception:
+            return False
 
 
 def stop():
-    try:
-        import winsound
-        winsound.PlaySound(None, winsound.SND_ASYNC | winsound.SND_PURGE)
-    except Exception:
-        pass
+    with _PLAY_LOCK:
+        try:
+            import winsound
+            winsound.PlaySound(None, winsound.SND_ASYNC | winsound.SND_PURGE)
+        except Exception:
+            pass
 
 
 if __name__ == '__main__':

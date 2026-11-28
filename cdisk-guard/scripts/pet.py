@@ -32,6 +32,8 @@ import random
 import ctypes
 import threading
 import datetime
+import queue
+from collections import OrderedDict
 from ctypes import wintypes
 
 # Python 3.13 wintypes 缺若干 HANDLE 別名 → 自行補上（皆為 void*）
@@ -48,6 +50,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SCRIPTS = os.path.join(ROOT, 'scripts')
 sys.path.insert(0, SCRIPTS)
 import cdiskctl as C  # noqa: E402
+import dg_common as COM  # noqa: E402
 import pet_sfx  # noqa: E402
 import pet_icon  # noqa: E402
 try:                                   # 新造型（軟體渲染）；失敗則回退舊 GDI 小碟
@@ -81,6 +84,7 @@ WM_MENU_DISMISS = WM_APP + 8       # 全域滑鼠鉤子通知選單關閉
 WM_MOUSELEAVE = 0x02A3             # TrackMouseEvent 送出的離開通知
 WM_TIMER_HOVER = 4                 # 懸停表情動畫計時器
 WM_TIMER_BLINK = 5                 # 待機隨機眨眼（一次性 timer 鏈，不常駐輪詢）
+WM_UI = WM_APP + 9                 # worker → UI 執行緒訊息
 # 待機眨眼：平均 10 s 一次（9–11 s 隨機，保留一點不規律感）；閉眼 110 ms；
 # 12% 機率連眨兩下。間隔越長 → 喚醒次數越少（省 CPU）。
 BLINK_GAP_SEC = (9.0, 11.0)
@@ -91,9 +95,10 @@ TME_LEAVE = 0x00000002
 WH_MOUSE_LL = 14
 HC_ACTION = 0
 
-# 懸停縮放：靜止略小，滑鼠移入時放大（104 px 視窗內不會被裁到）
-BASE_SCALE = 0.95
-HOVER_SCALE = 1.04
+# 視覺縮放：預設比舊版小 10%；懸停輕放大；抓起時再比預設大 12%。
+BASE_SCALE = 0.855       # 0.95 × 90%
+HOVER_SCALE = 0.94
+GRAB_SCALE = BASE_SCALE * 1.12
 WM_LBUTTONDOWN, WM_LBUTTONUP = 0x0201, 0x0202
 WM_RBUTTONDOWN, WM_RBUTTONUP = 0x0204, 0x0205   # 0x0204 是「按下」不是放開
 WM_TIMER_USAGE = 1
@@ -390,7 +395,7 @@ kernel32.GetCurrentProcessId.restype = wintypes.DWORD
 # ---------------------------------------------------------------- pet 設定
 PET_DEFAULTS = {
     'enabled': True,
-    'size': 104,               # 設計像素；實際視窗＝size×DPI（125% → 130），外觀尺寸不變
+    'size': 104,               # 視窗命中尺寸；實際視覺由 BASE_SCALE 控制（預設比舊版小 10%）
     'idle_hidden': False,
     'idle_corner': 'bottom-right',
     'sounds_enabled': True,
@@ -417,6 +422,46 @@ FONT_SCALES = (1.0, 1.15, 1.3)
 FONT_SCALE_NAMES = {1.0: '標準', 1.15: '大', 1.3: '特大'}
 
 
+def _overlap_area(a, b):
+    """兩個 (left, top, right, bottom) 矩形的交集面積。"""
+    w = max(0, min(a[2], b[2]) - max(a[0], b[0]))
+    h = max(0, min(a[3], b[3]) - max(a[1], b[1]))
+    return w * h
+
+
+def _choose_panel_position(pet_rect, panel_w, panel_h, bounds,
+                           gap=12, preferred=None):
+    """依桌寵位置選擇不重疊的面板左上角。
+
+    貓在畫面左半邊時優先放右側，右半邊則優先放左側；兩側都放不下再嘗試
+    上／下。preferred 供托盤入口使用，但若它會壓到貓，仍自動避讓。
+    """
+    sx, sy, sw, sh = bounds
+    pl, pt, pr, pb = pet_rect
+    pcx, pcy = (pl + pr) // 2, (pt + pb) // 2
+    right = (pr + gap, pcy - panel_h // 2)
+    left = (pl - panel_w - gap, pcy - panel_h // 2)
+    sides = [right, left] if pcx < sx + sw // 2 else [left, right]
+    candidates = []
+    if preferred is not None:
+        candidates.append(tuple(preferred))
+    candidates.extend(sides)
+    candidates.extend([(pcx - panel_w // 2, pt - panel_h - gap),
+                       (pcx - panel_w // 2, pb + gap)])
+
+    fallback = None
+    for idx, (x, y) in enumerate(candidates):
+        x = max(sx, min(int(x), sx + sw - panel_w))
+        y = max(sy, min(int(y), sy + sh - panel_h))
+        rect = (x, y, x + panel_w, y + panel_h)
+        overlap = _overlap_area(rect, (pl - gap, pt - gap, pr + gap, pb + gap))
+        if overlap == 0:
+            return x, y
+        if fallback is None or (overlap, idx) < fallback[0]:
+            fallback = ((overlap, idx), (x, y))
+    return fallback[1]
+
+
 def load_pet_config(cfg):
     """讀可選 config.json['pet'] 並校驗；非法值拋 ValueError（F13 快速失敗）。
 
@@ -438,8 +483,14 @@ def load_pet_config(cfg):
         raise ValueError('serve_idle_close_sec out of range (>=30)')
     if int(out['size']) < 32 or int(out['size']) > 256:
         raise ValueError('size out of 32..256')
-    if int(out['alert_fps']) > 60:
-        raise ValueError('alert_fps out of 1..60')
+    if int(out['heartbeat_sec']) < 5:
+        raise ValueError('heartbeat_sec must be >= 5')
+    if int(out['check_interval_sec']) < 5:
+        raise ValueError('check_interval_sec must be >= 5')
+    if float(out['alert_anim_sec']) < 0.5:
+        raise ValueError('alert_anim_sec must be >= 0.5')
+    if int(out['alert_fps']) != out['alert_fps'] or not 1 <= int(out['alert_fps']) <= 60:
+        raise ValueError('alert_fps out of integer 1..60')
     if out['idle_corner'] not in ('bottom-right', 'bottom-left', 'top-right', 'top-left'):
         raise ValueError('invalid idle_corner')
     if out['alert_entry_edge'] not in ('auto-nearest-tray', 'bottom', 'right', 'top', 'left'):
@@ -460,6 +511,7 @@ def event(cfg, name, **kw):
     d.update(kw)  # 禁止呼叫端傳入 token / path；這裡只寫列舉值與數值
     try:
         p = os.path.join(C.out_dir(cfg), 'pet-events.jsonl')
+        COM.ensure_dir(os.path.dirname(p))
         with open(p, 'a', encoding='utf-8') as f:
             f.write(json.dumps(d, ensure_ascii=False) + '\n')
     except Exception:
@@ -654,6 +706,7 @@ class Layered:
         # opaque=True：忽略 DIB 的 alpha 通道，整塊以 SourceConstantAlpha=255 輸出
         self._blend = BLENDFUNCTION(AC_SRC_OVER, 0, 255,
                                     0 if self.opaque else AC_SRC_ALPHA)
+        self.dirty = True
 
     def paint(self, draw_fn):
         ctypes.memset(self.bits, 0, self.w * self.h * 4)
@@ -662,9 +715,11 @@ class Layered:
         pt = POINT(0, 0)
         sz = SIZE(self.w, self.h)
         src = POINT(0, 0)
-        user32.UpdateLayeredWindow(self.hwnd, self.hdc_screen, None, ctypes.byref(sz),
-                                   self.hdc_mem, ctypes.byref(src), 0,
-                                   ctypes.byref(self._blend), ULW_ALPHA)
+        ok = user32.UpdateLayeredWindow(self.hwnd, self.hdc_screen, None, ctypes.byref(sz),
+                                        self.hdc_mem, ctypes.byref(src), 0,
+                                        ctypes.byref(self._blend), ULW_ALPHA)
+        self.dirty = not bool(ok)
+        return bool(ok)
 
     def paint_buffer(self, data):
         """直接把整塊 BGRA bytes 貼上（軟體渲染用，免 GDI 繪製）。"""
@@ -674,9 +729,11 @@ class Layered:
         ctypes.memmove(self.bits, data, need)
         sz = SIZE(self.w, self.h)
         src = POINT(0, 0)
-        user32.UpdateLayeredWindow(self.hwnd, self.hdc_screen, None, ctypes.byref(sz),
-                                   self.hdc_mem, ctypes.byref(src), 0,
-                                   ctypes.byref(self._blend), ULW_ALPHA)
+        ok = user32.UpdateLayeredWindow(self.hwnd, self.hdc_screen, None, ctypes.byref(sz),
+                                        self.hdc_mem, ctypes.byref(src), 0,
+                                        ctypes.byref(self._blend), ULW_ALPHA)
+        self.dirty = not bool(ok)
+        return bool(ok)
 
     def move(self, x, y):
         user32.MoveWindow(self.hwnd, int(x), int(y), self.w, self.h, True)
@@ -684,6 +741,8 @@ class Layered:
     def show(self, yes=True):
         # UpdateLayeredWindow 會一並設定可見性；這裡用 SW_SHOW/SW_HIDE
         user32.ShowWindow(self.hwnd, 5 if yes else 0)
+        if yes:
+            self.dirty = True
 
     def close(self):
         try:
@@ -705,6 +764,13 @@ user32.ShowWindow.argtypes = [wintypes.HWND, ctypes.c_int]
 user32.ShowWindow.restype = wintypes.BOOL
 user32.DestroyWindow.argtypes = [wintypes.HWND]
 user32.DestroyWindow.restype = wintypes.BOOL
+user32.GetCapture.argtypes = []
+user32.GetCapture.restype = wintypes.HWND
+if ctypes.sizeof(ctypes.c_void_p) == 8:
+    user32.GetWindowLongPtrW.argtypes = [wintypes.HWND, ctypes.c_int]
+    user32.GetWindowLongPtrW.restype = ctypes.c_ssize_t
+    user32.SetWindowLongPtrW.argtypes = [wintypes.HWND, ctypes.c_int, ctypes.c_ssize_t]
+    user32.SetWindowLongPtrW.restype = ctypes.c_ssize_t
 
 
 # ---------------------------------------------------------------- 主程式
@@ -722,13 +788,17 @@ class PetApp:
             fs = 1.15
         self.font_scale = min(1.3, max(1.0, fs))
         # 1:1 清晰繪製：程序已 DPI-aware，視窗與字型全部用「物理像素」。
-        # 104 設計像素 × 1.25 = 130 物理像素 → 外觀尺寸與舊版一模一樣，但不再被拉伸。
+        # 104 設計像素 × 1.25 = 130 物理像素；視覺大小另由 BASE_SCALE 縮放。
         self.dpi = dpi_scale()
         self.pet_size = max(24, int(round(int(pcfg['size']) * self.dpi)))
         # 造型：pet.art = 'robot'（新機械人）／'classic'（舊小碟）；無 pet_art 模組則強制回退
         art = str((pcfg or {}).get('art', 'robot') or 'robot').lower()
         self.use_new_art = bool(pet_art) and art != 'classic'
-        self._sprite_cache = {}
+        self._sprite_cache = OrderedDict()
+        self._sprite_cache_bytes = 0
+        self._sprite_cache_limit = 8 * 1024 * 1024
+        self._last_paint_hwnd = None
+        self._last_paint_key = None
         self.sound = bool(pcfg['sounds_enabled'])
         self.frame = 'idle'
         self.tick = 0
@@ -773,7 +843,13 @@ class PetApp:
         self.trace = os.path.exists(os.path.join(C.out_dir(self.cfg), 'pet-trace.on'))
         self.anim = None
         # Phase 2：所有耗時／會開埠的動作都在工作者執行緒，UI 只設旗標
-        self.state_lock = threading.RLock()
+        self.state_lock = C.STATE_LOCK
+        self._json_cache = COM.JsonFileCache()
+        self._ui_queue = queue.Queue()
+        self._config_sig = None
+        self._config_error_sig = None
+        self._scan_launch_lock = threading.Lock()
+        self._scan_thread = None
         self.scan_busy = threading.Lock()
         self.serve_busy = threading.Lock()
         self.scan_req = threading.Event()
@@ -799,15 +875,12 @@ class PetApp:
         self.bubble_win = None
         self.bubble_until = 0.0
         self.bubble_text = ''
-        self.clean_prog = None          # 上次看到的進度快照
-        self.clean_seen_seq = None      # 已提示過的 last_delete.seq
         self.clean_seen_ts = 0.0        # 已提示過的 last_delete.ts（seq 會因檔案重建而歸零）
         try:
             prev = C.read_last_delete(self.cfg)
-            self.clean_seen_seq = int(prev.get('seq')) if prev else 0
             self.clean_seen_ts = float(prev.get('ts') or 0) if prev else 0.0
         except Exception:
-            self.clean_seen_seq = 0
+            self.clean_seen_ts = 0.0
 
     # ---------- 狀態 ----------
     def save_state(self):
@@ -826,6 +899,27 @@ class PetApp:
             st['pet'] = self.pet_state
             C.write_state(self.cfg, st)
             self.state = st
+
+    def _ui_post(self, fn, *args, **kwargs):
+        """把 worker 的 UI 動作投遞回建立視窗的執行緒。"""
+        if not self.alive or not self.hwnd:
+            return
+        self._ui_queue.put((fn, args, kwargs))
+        try:
+            user32.PostMessageW(self.hwnd, WM_UI, 0, 0)
+        except Exception:
+            pass
+
+    def _drain_ui(self):
+        while True:
+            try:
+                fn, args, kwargs = self._ui_queue.get_nowait()
+            except queue.Empty:
+                return
+            try:
+                fn(*args, **kwargs)
+            except Exception as ex:
+                C.log(self.cfg, 'pet UI action error: %s' % ex)
 
     def _idle_pos(self):
         sw = user32.GetSystemMetrics(SM_XVIRTUALSCREEN)
@@ -871,10 +965,10 @@ class PetApp:
         return shell32.Shell_NotifyIconW(
             NIM_MODIFY if action is None else action, ctypes.byref(n))
 
-    def tip_text(self):
-        # 監控範圍內最緊張的那顆（預設只有 C:，行為與舊版相同）
+    def tip_text(self, disk=None, drive=None):
+        # 監控範圍內最緊張的那顆；worker 可傳本輪快照，避免重複查碟。
         try:
-            d, dv = C.worst_monitor(self.cfg)
+            d, dv = (disk, drive) if disk is not None else C.worst_monitor(self.cfg)
         except Exception:
             d, dv = C.disk_info(self.cfg['drive']), self.cfg['drive']
         return ('DiskGuard · %s %.2f%% 可用 · 桌寵%s' %
@@ -937,6 +1031,9 @@ class PetApp:
             if msg == WM_EXIT:
                 user32.PostQuitMessage(0)
                 return 0
+            if msg == WM_UI:
+                self._drain_ui()
+                return 0
             if msg == WM_TIMER:
                 if wparam == WM_TIMER_USAGE:
                     if time.time() >= self.usage_until:
@@ -955,29 +1052,33 @@ class PetApp:
                 return 0
             if msg == 0x0201:         # WM_LBUTTONDOWN（桌寵）
                 if self.pet_win:
-                    self.hover_reset()            # 開始拖曳／點擊前先收掉懸停表情
+                    self.hover_reset(repaint=False)  # 抓取造型稍後一次畫好
                     r = self.pet_win.rect()
                     pt = POINT()
                     user32.GetCursorPos(ctypes.byref(pt))
                     # [抓取偏移x, y, 是否已拖動, 按下點x, 按下點y]
                     self.drag = [pt.x - r[0], pt.y - r[1], False, pt.x, pt.y]
+                    self.frame = 'drag'           # 立即進入「被抓起」形象
+                    self.hover_scale = GRAB_SCALE
+                    self.repaint_pet()
                     user32.SetCapture(hwnd)   # 關鍵：沒有 capture，滑出視窗就收不到 MOUSEMOVE
                     self.sfx('menu_hit')
                 return 0
             if msg == 0x0202:         # WM_LBUTTONUP
                 moving = bool(self.drag and self.drag[2])
+                self.drag = None
                 user32.ReleaseCapture()
                 if self.anim and self.stop_anim():
-                    self.drag = None
+                    self.hover_scale = BASE_SCALE
+                    self.repaint_pet()
                     return 0          # 點氣泡只停動畫；背景分析不受影響
+                self.frame = 'idle'      # 放手後恢復待機表情與預設大小
+                self.hover_scale = BASE_SCALE
+                self.repaint_pet()
                 if moving:
                     self.save_state()
                     self.sfx('drag')
-                    self.drag = None
-                    self.frame = 'idle'      # 放手後恢復待機表情（否則會停在 wide 眼）
-                    self.repaint_pet()
                     return 0
-                self.drag = None
                 self.toggle_usage(None)
                 return 0
             if msg == 0x0200:         # WM_MOUSEMOVE
@@ -988,6 +1089,7 @@ class PetApp:
                         # 跟著跑，懸停表情也永遠不回來（2026-11-25 6.22 實測）。
                         self.drag = None
                         self.frame = 'idle'
+                        self.hover_scale = BASE_SCALE
                         self._drop_stale_capture()
                         self.save_state()
                         self.repaint_pet()
@@ -1003,7 +1105,7 @@ class PetApp:
                     self.pet_win.move(x, y)
                     self.pet_state['position'] = [x, y]
                     self.frame = 'drag'
-                    self.repaint_pet()
+                    # 抓起造型已在 WM_LBUTTONDOWN 畫好；移動期間只移動視窗。
                 else:
                     # 滑鼠移到機械人身上：表情互動（放大＋笑眼＋說話＋眨眼）
                     if not self.hover:
@@ -1020,6 +1122,7 @@ class PetApp:
                     self.drag = None
                     if self.frame == 'drag':
                         self.frame = 'idle'
+                        self.hover_scale = BASE_SCALE
                         self.repaint_pet()
                 return 0
             if msg == 0x0204:         # WM_RBUTTONDOWN（桌寵，按下即開選單）
@@ -1080,9 +1183,13 @@ class PetApp:
         sy = user32.GetSystemMetrics(SM_YVIRTUALSCREEN)
         sw = user32.GetSystemMetrics(SM_CXVIRTUALSCREEN)
         sh = user32.GetSystemMetrics(SM_CYVIRTUALSCREEN)
-        ax, ay = anchor or self._idle_pos()
-        x = max(sx, min(int(ax), sx + sw - W))
-        y = max(sy, min(int(ay), sy + sh - H))
+        if self.pet_win:
+            pet_rect = self.pet_win.rect()
+        else:
+            px, py = self._idle_pos()
+            pet_rect = (px, py, px + self.pet_size, py + self.pet_size)
+        x, y = _choose_panel_position(pet_rect, W, H, (sx, sy, sw, sh),
+                                      gap=self._px(12), preferred=anchor)
         self.usage_win.move(x, y)
         d = C.disk_info(self.cfg['drive'])
         scanp = C.scan_path(self.cfg)
@@ -1101,6 +1208,7 @@ class PetApp:
         low = d['free_pct'] < threshold
 
         S = self._fs
+        F = self._panel_font              # 磁碟面板文字額外 +2 px
 
         # 多碟（>1）時，原本「總容量／已用／剩餘／可用比例」四行改成一碟一行，
         # 一眼看出哪顆快滿；單碟時版面與舊版完全相同。後四項永遠是「當前碟」的。
@@ -1143,15 +1251,15 @@ class PetApp:
             _brush(hdc, BGR(120, 92, 240), lambda: gdi32.Rectangle(hdc, 0, 0, W, S(3)))
             _brush(hdc, BGR(28, 37, 52), lambda: gdi32.Rectangle(hdc, 0, S(3), W, S(48)))
             _brush(hdc, BGR(58, 72, 94), lambda: gdi32.Rectangle(hdc, 0, S(48), W, S(49)))
-            _text(hdc, S(18), S(15), 'DiskGuard · 磁碟用量', S(18), BGR(240, 245, 252), True)
-            _text(hdc, S(292), S(18), C.drive_key(d['drive']) + ':', S(14),
+            _text(hdc, S(18), S(15), 'DiskGuard · 磁碟用量', F(18), BGR(240, 245, 252), True)
+            _text(hdc, S(292), S(18), C.drive_key(d['drive']) + ':', F(14),
                   BGR(160, 176, 198), True)
             y = S(62)
             for k, v, color in rows:
-                _text(hdc, S(18), y, k, S(14), BGR(152, 168, 190))
-                _text(hdc, S(132), y, v, S(14), color)
+                _text(hdc, S(18), y, k, F(14), BGR(152, 168, 190))
+                _text(hdc, S(132), y, v, F(14), color)
                 y += S(22)
-            _text(hdc, S(18), H - S(18), '左鍵關閉 · 唯讀面板', S(11), BGR(120, 138, 160))
+            _text(hdc, S(18), H - S(18), '左鍵關閉 · 唯讀面板', F(11), BGR(120, 138, 160))
             _brush(hdc, BGR(48, 58, 74),
                    lambda: gdi32.Rectangle(hdc, S(18), H - S(28), S(322), H - S(22)))
             used = max(0.0, min(1.0, 1.0 - d['free_pct'] / 100.0))
@@ -1214,6 +1322,10 @@ class PetApp:
     def _fs(self, n):
         """依字級比例＋DPI 換算像素（座標與字級共用，確保版面等比且銳利）。"""
         return max(9, int(round(n * self.font_scale * self.dpi)))
+
+    def _panel_font(self, n):
+        """磁碟面板字級：在既有字級上再增加 2 個物理像素。"""
+        return self._fs(n) + self._px(2)
 
     def _menu_label(self, cid, base):
         """動態標籤：只改「動作型」項目的文字（開／關型改用 ✓ 表達）。"""
@@ -1640,6 +1752,7 @@ class PetApp:
             self.drag = None
             if self.frame == 'drag':
                 self.frame = 'idle'
+                self.hover_scale = BASE_SCALE
         rows, height = self._menu_layout()
         width = self._fs(340)
         sw = user32.GetSystemMetrics(0)
@@ -1909,6 +2022,7 @@ class PetApp:
             self._drop_stale_capture()
             if self.frame == 'drag':
                 self.frame = 'idle'
+                self.hover_scale = BASE_SCALE
                 self.repaint_pet()
         if self.drag or self.anim:
             return                        # 拖曳／警示動畫優先，先不覆蓋畫面
@@ -2007,21 +2121,36 @@ class PetApp:
             return
         # 軟體渲染約 30–40 ms／幀 → 依 (狀態, 尺寸, 相位, 縮放, 表情, 嘴) 快取
         phase = (t // 3) if f == 'scan' else 0
-        scale = round(self.hover_scale, 2)
+        scale = round(self.hover_scale, 3)
         eye, mouth = self.hover_eye, self.hover_mouth
+        if f == 'drag':
+            eye, mouth = 'wide', 'o'
         # 待機眨眼只在「待機中且沒有懸停／拖曳／警示」時生效，避免卡在閉眼狀態
         if eye is None and self.idle_eye and f == 'idle' \
                 and not self.hover and not self.drag and not self.anim:
             eye = self.idle_eye
-        mframe = (int(time.time() * 7) % 8) if mouth == 'talk' else 0
-        key = (f, size, phase, scale, eye, mouth, mframe)
+        render_tick = (int(time.monotonic() * 7) % 8) if mouth == 'talk' else t
+        key = (f, size, phase, scale, eye, mouth, render_tick)
+        hwnd = int(self.pet_win.hwnd)
+        if (not getattr(self.pet_win, 'dirty', False)
+                and hwnd == self._last_paint_hwnd and key == self._last_paint_key):
+            return
         buf = self._sprite_cache.get(key)
-        if buf is None:
-            buf = pet_art.render(f, size, t, scale=scale, eye=eye, mouth=mouth)
-            if len(self._sprite_cache) > 48:      # 懸停／字級／尺寸變更後避免無限長大
-                self._sprite_cache.clear()
+        if buf is not None:
+            self._sprite_cache.move_to_end(key)
+        else:
+            buf = pet_art.render(f, size, render_tick, scale=scale,
+                                 eye=eye, mouth=mouth)
             self._sprite_cache[key] = buf
-        self.pet_win.paint_buffer(buf)
+            self._sprite_cache_bytes += len(buf)
+            # 以位元組預算控制高 DPI 記憶體，避免固定 48 幀在大尺寸爆量。
+            while (self._sprite_cache_bytes > self._sprite_cache_limit
+                   and len(self._sprite_cache) > 1):
+                _old_key, old_buf = self._sprite_cache.popitem(last=False)
+                self._sprite_cache_bytes -= len(old_buf)
+        if self.pet_win.paint_buffer(buf):
+            self._last_paint_hwnd = hwnd
+            self._last_paint_key = key
 
     def on_alert(self):
         if time.time() < self.paused_until:
@@ -2099,7 +2228,7 @@ class PetApp:
         self.tick += 1
         if self.pet_win:
             self.pet_win.move(x, y)
-        self.repaint_pet()
+        # 警示期間精靈不變，只插值位置；結束時才重畫回待機。
 
     # ---------- 清理進度氣泡（B5）與結果提示（B6） ----------
     def _bubble_geometry(self):
@@ -2137,8 +2266,13 @@ class PetApp:
                 if rgn:
                     user32.SetWindowRgn(self.bubble_win.hwnd, rgn, True)
                 # 點擊穿透：氣泡只是提示，不可擋住桌寵或桌面操作
-                ex = user32.GetWindowLongW(self.bubble_win.hwnd, -20)
-                user32.SetWindowLongW(self.bubble_win.hwnd, -20, ex | 0x00000020)
+                if ctypes.sizeof(ctypes.c_void_p) == 8:
+                    ex = user32.GetWindowLongPtrW(self.bubble_win.hwnd, -20)
+                    user32.SetWindowLongPtrW(self.bubble_win.hwnd, -20,
+                                             ex | 0x00000020)
+                else:
+                    ex = user32.GetWindowLongW(self.bubble_win.hwnd, -20)
+                    user32.SetWindowLongW(self.bubble_win.hwnd, -20, ex | 0x00000020)
             win = self.bubble_win
             win.move(x, y)
             S = self._fs
@@ -2201,9 +2335,9 @@ class PetApp:
     def _poll_jobs(self, cfg):
         """每秒看一次清理進度與結果；任何錯誤都不應影響守護。"""
         if self.bubble_until and time.time() > self.bubble_until:
-            self.hide_bubble()
+            self._ui_post(self.hide_bubble)
         try:
-            prog = C.progress_running(cfg)
+            prog = C.progress_running(cfg, progress=C.read_progress(cfg, self._json_cache))
         except Exception:
             prog = None
         if prog:
@@ -2212,24 +2346,22 @@ class PetApp:
             frac = (done / float(total)) if total else 0.0
             sub = '已移除 %d 項 · 殘留 %d 項' % (int(prog.get('removed') or 0),
                                               int(prog.get('remaining') or 0))
-            self.show_bubble('清理中 %d/%d' % (done, total) if total else '清理中…',
-                             frac=frac, sub=sub, hold=2.5)
-            self.clean_prog = prog
+            self._ui_post(self.show_bubble,
+                          '清理中 %d/%d' % (done, total) if total else '清理中…',
+                          frac=frac, sub=sub, hold=2.5)
         try:
-            last = C.read_last_delete(cfg)
+            last = C.read_last_delete(cfg, self._json_cache)
         except Exception:
             last = None
         if last:
             try:
-                seq = int(last.get('seq') or 0)
                 ts = float(last.get('ts') or 0)
             except (TypeError, ValueError):
-                seq, ts = 0, 0.0
-            # 以 ts 判斷「是否有新結果」：seq 只是方便人看，檔案若被刪掉會從 1 重來
+                ts = 0.0
+            # 以 ts 判斷是否有新結果；seq 在檔案重建後可能歸零，不作為依據。
             if ts > self.clean_seen_ts + 0.5:
                 self.clean_seen_ts = ts
-                self.clean_seen_seq = seq
-                self._announce_delete(last)
+                self._ui_post(self._announce_delete, last)
 
         # 手動背景分析期間持續提示：全盤分析要跑幾分鐘，只閃一次 3 秒沒人看得到。
         # 優先序：清理進度／清理結果 > 分析提示（不要蓋掉剛播完的結果）。
@@ -2238,12 +2370,26 @@ class PetApp:
                 and time.time() < self.scan_hint_until
                 and not prog and time.time() >= self.notice_block_until):
             if self.bubble_text != self.scan_hint:
-                self.show_bubble(self.scan_hint,
-                                 sub='會在分析完成後開啟分析結果', hold=2.5)
+                self._ui_post(self.show_bubble, self.scan_hint,
+                              sub='會在分析完成後開啟分析結果', hold=2.5)
             else:
                 self.bubble_until = max(self.bubble_until, time.time() + 2.5)
 
     # ---------- 背景 worker（F7/F9/F10） ----------
+    def _submit_scan(self, cfg, reason):
+        """長掃描放獨立 daemon thread，輪詢 worker 繼續處理進度與伺服器。"""
+        with self._scan_launch_lock:
+            if self.scan_busy.locked():
+                return False
+            if self._scan_thread is not None and self._scan_thread.is_alive():
+                return False
+            t = threading.Thread(target=self._run_scan_flow,
+                                 args=(cfg, reason), daemon=True,
+                                 name='DiskGuard-scan')
+            self._scan_thread = t
+            t.start()
+            return True
+
     def maybe_weekly(self, cfg, disk=None, now=None):
         """週期分析閘門（B7）：到期且 CPU 閒置就排一次。
 
@@ -2269,7 +2415,7 @@ class PetApp:
             pass
         C.log(cfg, 'weekly due (%s)' % why)
         event(cfg, 'weekly_due', why=why)
-        self._run_scan_flow(cfg, 'weekly')
+        self._submit_scan(cfg, 'weekly')
         return True, why
 
     def _run_scan_flow(self, cfg, kind):
@@ -2320,7 +2466,8 @@ class PetApp:
                 self.scan_hint = ''
                 self.scan_hint_until = 0.0
                 self.notice_block_until = time.time() + 6.0
-                self.show_bubble('分析完成', sub='正在開啟分析結果…', hold=6.0)
+                self._ui_post(self.show_bubble, '分析完成',
+                              sub='正在開啟分析結果…', hold=6.0)
                 self.request_page(kind)
             elif level == 'warn' and cfg['alert'].get('notify_on_warn_pct'):
                 C.write_notice(cfg, disk, '桌寵背景分析後介於 2%~10%')
@@ -2330,7 +2477,7 @@ class PetApp:
             if kind == 'manual':
                 self.scan_hint = ''
                 self.scan_hint_until = 0.0
-                self.show_bubble('分析失敗', sub='詳見日誌', hold=5.0)
+                self._ui_post(self.show_bubble, '分析失敗', sub='詳見日誌', hold=5.0)
         finally:
             if kind == 'manual':            # 任何結束路徑都不要留下「分析中」提示
                 self.scan_hint = ''
@@ -2426,34 +2573,47 @@ class PetApp:
         if not srv:
             return
         if getattr(srv, '_stop', None) and srv._stop.is_set():
-            self._serve_close(cfg, 'remote')
+            self._ui_post(self._serve_close, cfg, 'remote')
             return
         if self.server_last_active and \
                 time.time() - self.server_last_active > self.idle_close:
-            self._serve_close(cfg, 'idle')
+            self._ui_post(self._serve_close, cfg, 'idle')
 
     def worker(self):
         next_check = 0.0
-        next_beat = 0.0
+        config_path = self.config_path or C.DEFAULT_CONFIG
         while not self.stop_evt.wait(1.0):
             now = time.time()
             try:
-                cfg = C.normalize_config(
-                    C.load_config(self.config_path) if self.config_path
-                    else C.load_config())
+                # 設定檔沒變就只 stat，不每秒重讀 JSON 和重新列舉磁碟。
+                sig = COM.file_signature(config_path)
+                if sig != self._config_sig:
+                    try:
+                        cfg = C.normalize_config(C.load_config(config_path))
+                        pcfg = load_pet_config(cfg)
+                    except Exception as ex:
+                        if sig != self._config_error_sig:
+                            C.log(self.cfg, 'pet config reload failed: %s' % ex)
+                            self._config_error_sig = sig
+                    else:
+                        self.cfg, self.p = cfg, pcfg
+                        self.idle_close = int(pcfg.get('serve_idle_close_sec', 600))
+                        self._config_sig = sig
+                        self._config_error_sig = None
+                cfg = self.cfg
                 if self.page_req.is_set():
                     self.page_req.clear()
-                    self._serve_open(cfg, self.page_reason)
+                    self._ui_post(self._serve_open, cfg, self.page_reason)
                 if self.scan_req.is_set():
                     self.scan_req.clear()
-                    self._run_scan_flow(cfg, self.scan_reason)
+                    self._submit_scan(cfg, self.scan_reason)
                 if now >= next_check:
-                    # 逐碟檢查「監控範圍」：預設只有 C:。掃描／清理範圍是另一回事，
-                    # 否則 D 盤一低就彈警示，會讓人以為 C 盤出事了。
+                    # 本輪磁碟查詢共用快取；托盤提示不再重複查一次。
+                    disk_cache = {}
                     lows = []
                     for dv in C.monitor_drives(cfg):
                         try:
-                            di = C.disk_info(dv)
+                            di = C._disk_cached(disk_cache, dv)
                         except OSError:
                             continue
                         C.log(cfg, 'pet check %s pct=%.2f free=%.2fGB' %
@@ -2465,15 +2625,13 @@ class PetApp:
                         self.alert_drive = lows[0][1]
                         user32.PostMessageW(self.hwnd, WM_ALERT, 0, 0)
                     else:
-                        self.tray_icon(False)
-                        self.tray(tip=self.tip_text())
-                    # 週期分析與警示狀態脫鉤：原本這段寫在 else 裡，磁碟低於門檻時
-                    # 永遠進不到，結果「每週一分析」在最需要它的時候反而不會跑（B7）。
-                    self.maybe_weekly(cfg, disk=C.disk_info(cfg['drive']))
+                        worst = C.worst_monitor(cfg, disk_cache=disk_cache)
+                        self._ui_post(self.tray_icon, False)
+                        self._ui_post(self.tray, tip=self.tip_text(*worst))
+                    # 週期分析與警示狀態脫鉤；長掃描由獨立執行緒處理。
+                    self.maybe_weekly(
+                        cfg, disk=C._disk_cached(disk_cache, cfg['drive']))
                     next_check = now + int(self.p.get('check_interval_sec', 300))
-                if now >= next_beat:
-                    self.save_state()
-                    next_beat = now + int(self.p['heartbeat_sec'])
                 self._serve_idle_check(cfg)
                 self._poll_jobs(cfg)
             except Exception as ex:
@@ -2529,7 +2687,9 @@ class PetApp:
             self.blink_arm(random.uniform(2.5, 5.0))   # 開場先眨一次，讓牠看起來是活的
             user32.SetTimer(self.hwnd, WM_TIMER_BEAT,
                             int(self.p['heartbeat_sec']) * 1000, None)
+            self.save_state()                 # 起始心跳；之後只由 UI timer 擁有
             t = threading.Thread(target=self.worker, daemon=True)
+            self._worker_thread = t
             t.start()
             self.sfx('boot')
             C.log(self.cfg, 'pet started size=%d(design %d) dpi=%.2f sound=%s pos=%s' %
@@ -2541,7 +2701,11 @@ class PetApp:
                 user32.TranslateMessage(ctypes.byref(msg))
                 user32.DispatchMessageW(ctypes.byref(msg))
         finally:
+            self.alive = False
             self.stop_evt.set()
+            worker = getattr(self, '_worker_thread', None)
+            if worker is not None and worker is not threading.current_thread():
+                worker.join(timeout=2.0)
             try:
                 self._serve_close(self.cfg, 'app_exit')
             except Exception:
@@ -2576,9 +2740,8 @@ def cmd_health(cfg):
     pst = st.get('pet') or {}
     ev = []
     try:
-        with open(os.path.join(C.out_dir(cfg), 'pet-events.jsonl'),
-                  'r', encoding='utf-8') as f:
-            ev = [json.loads(x) for x in f if x.strip()][-5:]
+        lines = COM.tail_lines(os.path.join(C.out_dir(cfg), 'pet-events.jsonl'), 5)
+        ev = [json.loads(x) for x in lines if x.strip()]
     except Exception:
         pass
     pid = pst.get('pid')
@@ -2739,6 +2902,23 @@ def cmd_selftest(cfg):
                and 1009 not in [c for v in PetApp.SUBMENU.values() for c, _l in v],
                'idle=%ss auto-open=always'
                % p.get('serve_idle_close_sec')))
+    ok.append(('visual scale',
+               abs(BASE_SCALE - 0.855) < 1e-6
+               and abs(GRAB_SCALE / BASE_SCALE - 1.12) < 1e-6,
+               'idle=%.3f grab=%.3f (+12%%)'
+               % (BASE_SCALE, GRAB_SCALE)))
+    left_pos = _choose_panel_position((20, 500, 124, 604), 391, 304,
+                                      (0, 0, 1920, 1080), gap=12)
+    right_pos = _choose_panel_position((1796, 500, 1900, 604), 391, 304,
+                                       (0, 0, 1920, 1080), gap=12)
+    ok.append(('panel avoids pet',
+               left_pos[0] >= 136 and right_pos[0] + 391 <= 1784,
+               'left-cat->right panel; right-cat->left panel'))
+    font_app = object.__new__(PetApp)
+    font_app.font_scale, font_app.dpi = 1.15, 1.0
+    ok.append(('panel font +2px',
+               font_app._panel_font(14) - font_app._fs(14) == 2,
+               '14px->%dpx' % font_app._panel_font(14)))
     # 2026-11-26：「查看日誌」收進系統設置最後一項；「分析後自動開頁」已移除
     ok.append(('menu log in settings',
                bool(PetApp.SUBMENU.get(2000)) and PetApp.SUBMENU[2000][-1][0] == 1003
